@@ -13,6 +13,9 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.0.4:
+    Npc scientists are now regular scientists; configure their kits/items if you don't like their default weapon choices
+
     2.0.3:
 	Re-added border around markers
 	
@@ -48,7 +51,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.3")]
+    [Info("Dangerous Treasures", "nivex", "2.0.4")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -121,7 +124,6 @@ namespace Oxide.Plugins
         const string fireballPrefab = "assets/bundled/prefabs/oilfireballsmall.prefab";
         static string radiusMarkerPrefab;
         static string scientistPrefab;
-        static string peacekeeperPrefab;
         static string murdererPrefab;
         static string vendingPrefab;
         static string explosionPrefab;
@@ -908,8 +910,7 @@ namespace Oxide.Plugins
 
             NPCPlayerApex InstantiateEntity(Vector3 position, bool murd)
             {
-                bool pk = true;
-                var name = murd ? murdererPrefab : pk ? peacekeeperPrefab : scientistPrefab;
+                var name = murd ? murdererPrefab : scientistPrefab;
                 var prefab = GameManager.server.FindPrefab(name);
                 var gameObject = Facepunch.Instantiate.GameObject(prefab, position, default(Quaternion));
 
@@ -1550,7 +1551,6 @@ namespace Oxide.Plugins
             boxShortname = StringPool.Get(2735448871);
             boxPrefab = StringPool.Get(2206646561);
             radiusMarkerPrefab = StringPool.Get(2849728229);
-            peacekeeperPrefab = StringPool.Get(686888238);
             scientistPrefab = StringPool.Get(4223875851);
             murdererPrefab = StringPool.Get(3879041546);
             vendingPrefab = StringPool.Get(3459945130);
