@@ -12,13 +12,14 @@ using System.Reflection;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.0")]
+    [Info("Dangerous Treasures", "nivex", "1.3.1")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
         [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements;
         public static readonly FieldInfo AllScientists = typeof(Scientist).GetField("AllScientists", (BindingFlags.Static | BindingFlags.NonPublic));
 
+        bool debug = false;
         static DangerousTreasures ins;
         static bool unloading = false;
         bool init = false;
@@ -99,6 +100,7 @@ namespace Oxide.Plugins
             Timer launch;
             Vector3 launchPos;
             List<ulong> exclude = new List<ulong>();
+            public bool targetChest;
 
             void Awake()
             {
@@ -117,16 +119,23 @@ namespace Oxide.Plugins
                 missile.timerAmountMax = timeUntilExplode;
                 
                 missile.damageTypes = new List<DamageTypeEntry>(); // no damage
-                missile.Spawn();
+            }
 
-                if (!missile)
-                    return;
+            public void SetTarget(BaseEntity target, bool targetChest)
+            {
+                this.target = target;
+                this.targetChest = targetChest;
+            }
+
+            public void Launch(float targettingTime)
+            {
+                missile.Spawn();
 
                 launch = ins.timer.Once(targettingTime, () =>
                 {
                     if (!missile || missile.IsDestroyed)
                         return;
-                    
+
                     var list = new List<BasePlayer>();
                     var entities = Pool.GetList<BaseEntity>();
                     Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerMask, QueryTriggerInteraction.Collide);
@@ -151,7 +160,7 @@ namespace Oxide.Plugins
 
                     if (list.Count > 0)
                     {
-                        SetTarget(list.GetRandom()); // pick a random player
+                        target = list.GetRandom(); // pick a random player
                         list.Clear();
                     }
                     else if (!targetChest)
@@ -163,11 +172,6 @@ namespace Oxide.Plugins
                     projectile.speed = rocketSpeed * rocketSpeedMulti;
                     InvokeRepeating(new Action(GuideMissile), 0.1f, 0.1f);
                 });
-            }
-
-            public void SetTarget(BaseEntity target)
-            {
-                this.target = target;
             }
 
             public void Exclude(List<ulong> list)
@@ -235,6 +239,8 @@ namespace Oxide.Plugins
             Vector3 lastFirePos;
             bool firstEntered;
 
+            VendingMachineMapMarker vendingMarker;
+            MapMarkerGenericRadius genericMarker;
             Dictionary<ulong, float> fireticks = new Dictionary<ulong, float>();
             List<FireBall> fireballs = new List<FireBall>();
             List<ulong> players = new List<ulong>();
@@ -250,29 +256,66 @@ namespace Oxide.Plugins
             public List<NPCPlayerApex> npcs = new List<NPCPlayerApex>();
             List<Vector3> spawnpoints;
 
+            public bool HasRustMarker
+            {
+                get
+                {
+                    return vendingMarker != null && genericMarker != null;
+                }
+            }
+
             public bool HasNPC(ulong userID)
             {
-                return npcs.Any(x => x.userID == userID);
+                foreach(var x in npcs)
+                {
+                    if (x.userID == userID)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             public Vector3 GetSpawn()
             {
-                if (monuments.Any(x => Vector3.Distance(x.transform.position, containerPos) < 50f))
+                foreach(var x in monuments)
                 {
-                    return containerPos;
+                    if (Vector3.Distance(x.transform.position, containerPos) < 50f)
+                    {
+                        return containerPos;
+                    }
                 }
 
                 if (spawnpoints == null || spawnpoints.Count == 0)
-                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f && IsValidSpawn(e)).Select(e => new Vector3(e.transform.position.x, e.transform.position.y + 0.25f, e.transform.position.z)).ToList();
+                {
+                    spawnpoints = new List<Vector3>();
+
+                    foreach(var e in BaseNetworkable.serverEntities)
+                    {
+                        if (e != null && e.transform != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f && IsValidSpawn(e))
+                        {
+                            spawnpoints.Add(new Vector3(e.transform.position.x, e.transform.position.y + 0.25f, e.transform.position.z));
+                        }
+                    }
+                }
 
                 if (!undergroundLoot)
                 {
                     spawnpoints.RemoveAll(e => e.y < containerPos.y);
                 }
 
-                var narrowed = spawnpoints.Where(x => Vector3.Distance(x, containerPos) < 15f).ToList();
+                var narrowed = new List<Vector3>();
 
-                if (narrowed.Count >= spawnNpcsAmount)
+                foreach (var sp in spawnpoints)
+                {
+                    if (Vector3.Distance(sp, containerPos) < 15f)
+                    {
+                        narrowed.Add(sp);
+                    }
+                }
+
+                if (narrowed.Count > 0 && narrowed.Count >= spawnNpcsAmount)
                 {
                     return narrowed.GetRandom();
                 }
@@ -311,7 +354,7 @@ namespace Oxide.Plugins
                         }
                         else
                         {
-                            ins.Puts(ins.msg(szInvalidConstant, null, spherePrefab));
+                            ins.Puts(ins.rf(szInvalidConstant, null, spherePrefab));
                             useSpheres = false;
                             break;
                         }
@@ -327,9 +370,8 @@ namespace Oxide.Plugins
                         var missile = GameManager.server.CreateEntity(rocketResourcePath, position, new Quaternion(), true) as TimedExplosive;
                         var gs = missile.gameObject.AddComponent<GuidanceSystem>();
 
-                        gs.Exclude(newmans);
-                        gs.SetTarget(container);
-                        //CreateRocket(position, containerPos, Vector3.down);
+                        gs.SetTarget(container, true);
+                        gs.Launch(0.1f);
                     }
 
                     positions.Clear();
@@ -353,6 +395,8 @@ namespace Oxide.Plugins
                         LaunchMissile();
                     }
                 }
+
+                UpdateMarker();
             }
 
             void OnTriggerEnter(Collider col)
@@ -461,6 +505,54 @@ namespace Oxide.Plugins
                 }
             }
 
+            public void UpdateMarker()
+            {
+                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                {
+                    vendingMarker.Kill();
+                }
+
+                if (genericMarker != null && !genericMarker.IsDestroyed)
+                {
+                    genericMarker.Kill();
+                }
+
+                int markerCount = 0;
+
+                foreach (var e in treasureChests.Values)
+                {
+                    if (e.HasRustMarker)
+                    {
+                        markerCount++;
+
+                        if (markerCount > 10)
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                vendingMarker = GameManager.server.CreateEntity("assets/prefabs/deployable/vendingmachine/vending_mapmarker.prefab", containerPos) as VendingMachineMapMarker;
+
+                if (vendingMarker != null)
+                {
+                    vendingMarker.enabled = false;
+                    vendingMarker.markerShopName = "Dangerous Treasures Event";
+                    vendingMarker.Spawn();
+                }
+
+                genericMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/genericradiusmarker.prefab", containerPos) as MapMarkerGenericRadius;
+
+                if (genericMarker != null)
+                {
+                    genericMarker.alpha = 1f;
+                    genericMarker.color1 = Color.red;
+                    genericMarker.radius = 0.1f;
+                    genericMarker.Spawn();
+                    genericMarker.SendUpdate();
+                }
+            }
+
             void KillNpc()
             {
                 foreach (var npc in npcs.ToList())
@@ -476,6 +568,17 @@ namespace Oxide.Plugins
 
             void OnDestroy()
             {
+                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                {
+                    vendingMarker.Kill();
+                }
+
+                if (genericMarker != null && !genericMarker.IsDestroyed)
+                {
+                    genericMarker.Kill();
+                    genericMarker.SendUpdate();
+                }
+
                 ins.RemoveLustyMarker(uid);
                 ins.RemoveMapMarker(uid);
                 DestroyLauncher();
@@ -536,7 +639,8 @@ namespace Oxide.Plugins
                 var gs = missile.gameObject.AddComponent<GuidanceSystem>();
 
                 gs.Exclude(newmans);
-                gs.SetTarget(container);
+                gs.SetTarget(container, targetChest);
+                gs.Launch(targettingTime);
             }
 
             void SpawnFire()
@@ -574,7 +678,7 @@ namespace Oxide.Plugins
 
                 if (fireball == null)
                 {
-                    ins.Puts(ins.msg(szInvalidConstant, null, fireballPrefab));
+                    ins.Puts(ins.rf(szInvalidConstant, null, fireballPrefab));
                     useFireballs = false;
                     CancelInvoke(new Action(SpawnFire));
                     firePositions.Clear();
@@ -608,7 +712,7 @@ namespace Oxide.Plugins
                     var posStr = FormatGridReference(containerPos);
 
                     foreach (var target in BasePlayer.activePlayerList)
-                        SendDangerousMessage(target, containerPos, ins.msg("OnChestDespawned", target.UserIDString, posStr));
+                        ins.Player.Message(target, ins.msg("OnChestDespawned", target.UserIDString, posStr));
                 }
 
                 unlock?.Destroy();
@@ -694,7 +798,7 @@ namespace Oxide.Plugins
                             string eventPos = FormatGridReference(containerPos);
 
                             foreach (var target in BasePlayer.activePlayerList)
-                                SendDangerousMessage(target, containerPos, ins.msg(szEventCountdown, target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
+                                ins.Player.Message(target, ins.msg(szEventCountdown, target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
 
                             times.Remove(countdownTime);
                         }
@@ -789,7 +893,7 @@ namespace Oxide.Plugins
 
             if (chestLoot.Count == 0)
             {
-                Puts(msg(szUnloading, null, "Treasure"));
+                Puts(rf(szUnloading, null, "Treasure"));
                 Interface.Oxide.UnloadPlugin(Name);
                 return;
             }
@@ -833,7 +937,7 @@ namespace Oxide.Plugins
 
             if (!rocketDef)
             {
-                ins.Puts(ins.msg(szInvalidConstant, null, useFireRockets ? fireRocketShortname : basicRocketShortname));
+                ins.Puts(ins.rf(szInvalidConstant, null, useFireRockets ? fireRocketShortname : basicRocketShortname));
                 useRocketOpener = false;
             }
             else
@@ -843,7 +947,7 @@ namespace Oxide.Plugins
 
             if (!boxDef)
             {
-                Puts(msg(szInvalidConstant, null, boxShortname));
+                Puts(rf(szInvalidConstant, null, boxShortname));
                 useRandomBoxSkin = false;
             }
 
@@ -892,24 +996,24 @@ namespace Oxide.Plugins
 
             if (!undergroundLoot)
                 blacklistedMonuments.Add("Sewer");
-
+            
             monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap).ToList());
+            if (monuments.Count > 0) allowedMonuments.AddRange(monuments);
 
-            if (monuments.Count == 0)
-            {                
+            foreach (var m in allowedMonuments.ToList())
+            {
+                if (m.displayPhrase.english.Contains("Oil Rig") || blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
+                {
+                    allowedMonuments.Remove(m);
+                }
+            }
+
+            if (debug) Puts(string.Join(", ", allowedMonuments.Select(m => m.displayPhrase.english).ToArray()));
+
+            if (allowedMonuments.Count == 0)
+            {
                 onlyMonuments = false;
                 allowMonumentChance = 0f;
-            }
-            else
-            {
-                foreach (var m in monuments.ToList())
-                {
-                    if (m.displayPhrase.english.Contains("Oil Rig") || blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
-                    {
-                        monuments.Remove(m);
-                        //Puts("---" + m.displayPhrase.english);
-                    }
-                }
             }
 
             if (includeWorkshopBox || includeWorkshopTreasure)
@@ -935,7 +1039,7 @@ namespace Oxide.Plugins
                     if (container == null)
                         continue;
 
-                    Puts(msg(szDestroyed, null, container.transform.position));
+                    Puts(rf(szDestroyed, null, container.transform.position));
                     container.inventory?.Clear();
 
                     if (!container.IsDestroyed)
@@ -973,9 +1077,12 @@ namespace Oxide.Plugins
             {
                 var npc = entity as NPCPlayer;
 
-                if (treasureChests.Values.Any(x => x.HasNPC(npc.userID)))
+                foreach(var x in treasureChests.Values)
                 {
-                    return false;
+                    if (x.HasNPC(npc.userID))
+                    {
+                        return false;
+                    }
                 }
             }
 
@@ -992,13 +1099,27 @@ namespace Oxide.Plugins
                 {
                     return 0f;
                 }
-                else if (player is NPCPlayer && treasureChests.Values.Any(x => x.HasNPC(player.userID) && x.HasNPC(npc.userID)))
+                else if (player is NPCPlayer)
                 {
-                    return true;
+                    foreach (var x in treasureChests.Values)
+                    {
+                        if (x.HasNPC(npc.userID) && x.HasNPC(player.userID))
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
 
             return null;
+        }
+
+        void OnPlayerInit(BasePlayer player)
+        {
+            foreach (var entry in treasureChests.Values.ToList())
+            {
+                entry.UpdateMarker();
+            }
         }
 
         void OnPlayerDie(BasePlayer player)
@@ -1031,8 +1152,18 @@ namespace Oxide.Plugins
             else if (entity is NPCPlayerCorpse)
             {
                 var corpse = entity as NPCPlayerCorpse;
+                TreasureChest chest = null;
 
-                if (treasureChests.Values.Any(x => x.HasNPC(corpse.playerSteamID)))
+                foreach(var x in treasureChests.Values)
+                {
+                    if (x.HasNPC(corpse.playerSteamID))
+                    {
+                        chest = x;
+                        break;
+                    }
+                }
+
+                if (chest != null)
                 {
                     if (spawnsDespawnInventory)
                     {
@@ -1047,14 +1178,24 @@ namespace Oxide.Plugins
                         });
                     }
 
-                    var chest = treasureChests.Values.First(x => x.HasNPC(corpse.playerSteamID));
                     chest.npcs.RemoveAll(npc => npc.userID == corpse.playerSteamID);
+                    bool npcCountZero = true;
 
-                    if (treasureChests.Values.All(x => x.npcs.Count == 0))
+                    foreach(var x in treasureChests.Values)
+                    {
+                        if (x.npcs.Count > 0)
+                        {
+                            npcCountZero = false;
+                            break;
+                        }
+                    }
+
+                    if (npcCountZero)
                     {
                         Unsubscribe(nameof(OnNpcPlayerTarget));
                         Unsubscribe(nameof(CanBradleyApcTarget));
                         Unsubscribe(nameof(OnPlayerDie));
+                        Unsubscribe(nameof(OnPlayerInit));
                     }
                 }
             }
@@ -1064,9 +1205,13 @@ namespace Oxide.Plugins
                 {
                     if (entity != null && !entity.IsDestroyed)
                     { 
-                        if (treasureChests.Values.Any(x => Vector3.Distance(entity.transform.position, x.containerPos) <= eventRadius))
+                        foreach (var x in treasureChests.Values)
                         {
-                            entity.KillMessage();
+                            if (Vector3.Distance(entity.transform.position, x.containerPos) <= eventRadius)
+                            {
+                                entity.KillMessage();
+                                break;
+                            }
                         }
                     }
                 });          
@@ -1123,7 +1268,7 @@ namespace Oxide.Plugins
                     var posStr = FormatGridReference(entity.transform.position);
 
                     foreach (var target in BasePlayer.activePlayerList)
-                        SendDangerousMessage(target, entity.transform.position, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
+                        Player.Message(target, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
                 }
             }
         }
@@ -1168,10 +1313,10 @@ namespace Oxide.Plugins
                         }
 
                         var posStr = FormatGridReference(looter.transform.position);
-                        Puts(msg(szEventThief, null, posStr, looter.displayName));
+                        Puts(rf(szEventThief, null, posStr, looter.displayName));
 
                         foreach (var target in BasePlayer.activePlayerList)
-                            SendDangerousMessage(target, looter.transform.position, msg(szEventThief, target.UserIDString, posStr, looter.displayName));
+                            Player.Message(target, msg(szEventThief, target.UserIDString, posStr, looter.displayName));
 
                         looter.EndLooting();
 
@@ -1188,10 +1333,10 @@ namespace Oxide.Plugins
                         {
                             if (ServerRewards != null)
                             {
-                                var success = ServerRewards?.Call("AddPoints", looter.userID, serverRewardsPoints);
+                                var success = ServerRewards?.Call("AddPoints", looter.userID, (int)serverRewardsPoints);
 
                                 if (success != null && success is bool && (bool)success)
-                                    looter.ChatMessage(msg(szRewardPoints, looter.UserIDString, serverRewardsPoints));
+                                    looter.ChatMessage(msg(szRewardPoints, looter.UserIDString, (int)serverRewardsPoints));
                             }
                         }
                     }
@@ -1225,7 +1370,15 @@ namespace Oxide.Plugins
 
         bool EventTerritory(Vector3 position)
         {
-            return treasureChests.Values.Any(x => Vector3.Distance(x.containerPos, new Vector3(position.x, x.containerPos.y, position.z)) <= eventRadius);
+            foreach(var x in treasureChests.Values)
+            {
+                if (Vector3.Distance(x.containerPos, new Vector3(position.x, x.containerPos.y, position.z)) <= eventRadius)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo hitInfo)
@@ -1260,7 +1413,21 @@ namespace Oxide.Plugins
 
             var npc = entity as NPCPlayer;
 
-            if (npc == null || !treasureChests.Values.Any(x => x.HasNPC(npc.userID)))
+            if (npc == null)
+                return;
+
+            bool hasNpc = false;
+
+            foreach (var x in treasureChests.Values)
+            {
+                if (x.HasNPC(npc.userID))
+                {
+                    hasNpc = true;
+                    break;
+                }
+            }
+
+            if (!hasNpc)
                 return;
 
             if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions
@@ -1290,6 +1457,7 @@ namespace Oxide.Plugins
                     Subscribe(nameof(CanEntityTakeDamage));
                 }
 
+                Subscribe(nameof(OnPlayerInit));
                 Subscribe(nameof(CanBradleyApcTarget));
                 Subscribe(nameof(OnNpcPlayerTarget));
                 Subscribe(nameof(OnEntityTakeDamage));
@@ -1300,6 +1468,7 @@ namespace Oxide.Plugins
             }
             else
             {
+                Unsubscribe(nameof(OnPlayerInit));
                 Unsubscribe(nameof(CanEntityTakeDamage));
                 Unsubscribe(nameof(CanBradleyApcTarget));
                 Unsubscribe(nameof(OnNpcPlayerTarget));
@@ -1329,7 +1498,16 @@ namespace Oxide.Plugins
 
                 position.y = y != 0f ? y : UnityEngine.Random.Range(100f, 200f);
 
-                var match = positions.FirstOrDefault(p => Vector3.Distance(p, position) < space);
+                var match = Vector3.zero;
+
+                foreach(var p in positions)
+                {
+                    if (Vector3.Distance(p, position) < space)
+                    {
+                        match = p;
+                        break;
+                    }
+                }
 
                 if (match != Vector3.zero)
                 {
@@ -1378,11 +1556,16 @@ namespace Oxide.Plugins
                     continue;
                 }
 
-                if (treasureChests.Values.Any(x => Vector3.Distance(x.containerPos, eventPos) < eventRadius))
+                foreach(var x in treasureChests.Values)
                 {
-                    eventPos = Vector3.zero;
-                    continue;
+                    if (Vector3.Distance(x.containerPos, eventPos) <= eventRadius * 2)
+                    {
+                        eventPos = Vector3.zero;
+                        break;
+                    }
                 }
+
+                if (eventPos == Vector3.zero) continue;
 
                 if (managedZones.Count > 0)
                 {
@@ -1398,7 +1581,7 @@ namespace Oxide.Plugins
 
                 foreach (var monument in monuments)
                 {
-                    if (Vector3.Distance(eventPos, monument.transform.position) < 150f) // don't put the treasure chest near a monument
+                    if (Vector3.Distance(eventPos, monument.transform.position) <= GetMonumentRadius(monument.name) + 25f) // don't put the treasure chest near a monument
                     {
                         eventPos = Vector3.zero;
                         break;
@@ -1435,7 +1618,7 @@ namespace Oxide.Plugins
             var colliders = Pool.GetList<Collider>();
             Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Collide);
 
-            colliders.RemoveAll(collider => collider.GetComponentInParent<NPCPlayerApex>() != null || !collider.GetComponentInParent<BaseEntity>().OwnerID.IsSteamId());
+            colliders.RemoveAll(collider => collider.GetComponentInParent<NPCPlayerApex>() != null || (!collider.GetComponentInParent<BaseEntity>()?.OwnerID.IsSteamId() ?? true));
 
             bool blocked = colliders.Count > 0;
 
@@ -1444,26 +1627,80 @@ namespace Oxide.Plugins
             return blocked;
         }
 
+        float GetMonumentRadius(string monument)
+        {
+            if (monument.Contains("airfield_1"))
+                return 215f;
+            else if (monument.Contains("sphere_tank")) // The Dome
+                return 50f;
+            else if (monument.Contains("harbor_1"))
+                return 120f;
+            else if (monument.Contains("harbor_2"))
+                return 80f;
+            else if (monument.Contains("launch_site_1"))
+                return 170f;
+            else if (monument.Contains("lighthouse"))
+                return 15f;
+            else if (monument.Contains("powerplant"))
+                return 120f;
+            else if (monument.Contains("radtown"))
+                return 85f;
+            else if (monument.Contains("satellite"))
+                return 60f;
+            else if (monument.Contains("trainyard"))
+                return 100f;
+            else if (monument.Contains("tunnel")) // Military Tunnel
+                return 90f;
+            else if (monument.Contains("treatment")) // Water Treatment Plant
+                return 120f;
+            else if (monument.Contains("power_sub"))
+                return 20f;
+            else if (monument.Contains("swamp_c")) // Abandoned Cabins
+                return 50f;
+            else if (monument.Contains("gas_station_1")) // Oxum's Gas Station
+                return 85f;
+            else if (monument.Contains("supermarket_1")) // Abandoned Supermarket
+                return 40f;
+            else if (monument.Contains("warehouse")) // Mining Outpost
+                return 35f;
+            else if (monument.Contains("mining_quarry_a")) // Sulfur Quarry
+                return 50f;
+            else if (monument.Contains("mining_quarry_b")) // Stone Quarry
+                return 45f;
+            else if (monument.Contains("mining_quarry_c")) // HQM Quarry
+                return 55f;
+            else if (monument.Contains("compound")) // Outpost
+                return 145f;
+            else if (monument.Contains("bandit_town")) // Bandit Camp
+                return 95f;
+            else if (monument.Contains("junkyard_1"))
+                return 155f;
+
+            return 250f;
+        }
+
         public Vector3 GetRandomMonumentDropPosition(Vector3 position)
         {
-            if (monuments.Any(m => Vector3.Distance(m.transform.position, position) < 75f))
+            foreach(var monument in allowedMonuments)
             {
-                var monument = monuments.First(m => Vector3.Distance(m.transform.position, position) < 75f);
-                int attempts = 100;
-
-                while (--attempts > 0)
+                if (Vector3.Distance(monument.transform.position, position) < 75f)
                 {
-                    var randomPoint = monument.transform.position + UnityEngine.Random.insideUnitSphere * 75f;
-                    randomPoint.y = 100f;
+                    int attempts = 100;
 
-                    RaycastHit hit;
-                    if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightMask, QueryTriggerInteraction.Ignore))
+                    while (--attempts > 0)
                     {
-                        if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
+                        var randomPoint = monument.transform.position + UnityEngine.Random.insideUnitSphere * 75f;
+                        randomPoint.y = 100f;
+
+                        RaycastHit hit;
+                        if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightMask, QueryTriggerInteraction.Ignore))
                         {
-                            if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionMask))
+                            if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
                             {
-                                return hit.point;
+                                if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionMask))
+                                {
+                                    return hit.point;
+                                }
                             }
                         }
                     }
@@ -1475,13 +1712,27 @@ namespace Oxide.Plugins
 
         public Vector3 GetMonumentDropPosition()
         {
-            var list = monuments.ToList();
+            var list = allowedMonuments.ToList();
 
             MonumentInfo monument = null;
 
             while (monument == null && list.Count > 0)
             {
                 var mon = list.GetRandom();
+
+                foreach (var x in treasureChests.Values) // 1.3.1
+                {
+                    if (Vector3.Distance(x.containerPos, mon.transform.position) <= eventRadius * 2)
+                    {
+                        list.Remove(mon);
+                        break;
+                    }
+                }
+
+                if (!list.Contains(mon))
+                {
+                    continue;
+                }
 
                 if (!IsLayerBlocked(mon.transform.position, eventRadius + 25f, obstructionMask))
                 {
@@ -1497,13 +1748,23 @@ namespace Oxide.Plugins
                 return Vector3.zero;
             }
 
-            var entities = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && Vector3.Distance(e.transform.position, monument.transform.position) < eventRadius && IsValidSpawn(e)).ToList();
+            var entities = new List<BaseNetworkable>();
+
+            foreach(var e in BaseNetworkable.serverEntities)
+            {
+                if (e != null && e.transform != null && !entities.Contains(e) && Vector3.Distance(e.transform.position, monument.transform.position) < eventRadius && IsValidSpawn(e))
+                {
+                    entities.Add(e);
+                }
+            }
 
             if (!undergroundLoot)
             {
                 entities.RemoveAll(e => e.transform.position.y < monument.transform.position.y);
             }
-            
+
+            if (debug) Puts(">>>>>>>>>>>>>> {0}", monument.displayPhrase.english);
+
             if (entities.Count < 2)
             {
                 var pos = GetRandomMonumentDropPosition(monument.transform.position);
@@ -1587,7 +1848,7 @@ namespace Oxide.Plugins
         {
             var position = TryOpenEvent();
             //if (position != Vector3.zero)
-            //Puts(msg(szEventAt, null, FormatGridReference(position)));
+            //Puts(rconmsg(szEventAt, null, FormatGridReference(position)));
 
             return position;
         }
@@ -1624,7 +1885,7 @@ namespace Oxide.Plugins
 
             if (!container)
             {
-                Puts(msg(szInvalidConstant, null, boxPrefab));
+                Puts(rf(szInvalidConstant, null, boxPrefab));
                 return Vector3.zero;
             }
 
@@ -1742,7 +2003,7 @@ namespace Oxide.Plugins
 
                 if (showOpened)
                 {
-                    SendDangerousMessage(target, container.transform.position, message);
+                    Player.Message(target, message);
                 }
 
                 if (useGUIAnnouncements && GUIAnnouncements != null && distance <= guiDrawDistance)
@@ -1751,7 +2012,7 @@ namespace Oxide.Plugins
                 }
 
                 if (useRocketOpener && showBarrage)
-                    SendDangerousMessage(target, container.transform.position, msg(szEventBarrage, target.UserIDString, numRockets));
+                    Player.Message(target, msg(szEventBarrage, target.UserIDString, numRockets));
 
                 if (drawTreasureIfNearby && autoDrawDistance > 0f && distance <= autoDrawDistance)
                     DrawText(target, container.transform.position, msg(szTreasureChest, target.UserIDString, distance));
@@ -1770,13 +2031,25 @@ namespace Oxide.Plugins
             timer.Once(unlockTime + destructTime, () => RemoveMapMarker(uid));
             timer.Once(unlockTime + destructTime, () => RemoveLustyMarker(uid));
 
-            string monumentName = monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated;
+            string monumentName = null;
+
+            foreach(var monument in monuments)
+            {
+                if (Vector3.Distance(monument.transform.position, position) <= 75f)
+                {
+                    monumentName = monument.displayPhrase.translated;
+                    break;
+                }
+            }
 
             if (!string.IsNullOrEmpty(monumentName))
             {
-                if (blacklistedNPCMonuments.Any(x => monumentName.ToLower().Trim() == x.ToLower().Trim()))
+                foreach(var bm in blacklistedNPCMonuments)
                 {
-                    return position;
+                    if (monumentName.ToLower().Trim() == bm.ToLower().Trim())
+                    {
+                        return position;
+                    }
                 }
             }
 
@@ -1879,8 +2152,8 @@ namespace Oxide.Plugins
             if (storedData.SecondsUntilEvent == double.MinValue) // first time users
             {
                 storedData.SecondsUntilEvent = stamp + eventInterval;
-                Puts(msg(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
-                Puts(msg(szFirstTimeUse));
+                Puts(rf(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
+                Puts(rf(szFirstTimeUse));
                 SaveData();
                 return;                
             }
@@ -1902,7 +2175,7 @@ namespace Oxide.Plugins
                     }
 
                     storedData.SecondsUntilEvent = stamp + eventInterval;
-                    Puts(msg(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
+                    Puts(rf(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
                     SaveData();
                 }
             }
@@ -1910,7 +2183,16 @@ namespace Oxide.Plugins
 
         public static string FormatGridReference(Vector3 position) // Credit: Jake_Rich. Fix by trixxxi (y,x -> x,y switch)
         {
-            string monumentName = monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated ?? null; // request MrSmallZzy
+            string monumentName = null;
+
+            foreach(var monument in monuments)  // request MrSmallZzy
+            {
+                if (Vector3.Distance(monument.transform.position, position) <= 75f)
+                {
+                    monumentName = monument.displayPhrase.translated;
+                    break;
+                }
+            }
 
             if (showXZ)
             {
@@ -1972,8 +2254,11 @@ namespace Oxide.Plugins
 
         bool AssignTreasureHunters(List<KeyValuePair<string, int>> ladder)
         {
-            foreach (var target in covalence.Players.All.Where(p => p != null))
+            foreach (var target in covalence.Players.All)
             {
+                if (target == null || string.IsNullOrEmpty(target.Id))
+                    continue;
+
                 if (permission.UserHasPermission(target.Id, ladderPerm))
                     permission.RevokeUserPermission(target.Id, ladderPerm);
 
@@ -2003,7 +2288,7 @@ namespace Oxide.Plugins
                 permission.AddUserGroup(target.Id, ladderGroup.ToLower());
 
                 LogToFile("treasurehunters", DateTime.Now.ToString() + " : " + msg(szLogStolen, null, target.Name, target.Id, ladder[i].Value), this, true);
-                Puts(msg(szLogGranted, null, target.Name, target.Id, ladderPerm, ladderGroup));
+                Puts(rf(szLogGranted, null, target.Name, target.Id, ladderPerm, ladderGroup));
 
                 if (++permsGiven >= permsToGive)
                     break;
@@ -2012,7 +2297,7 @@ namespace Oxide.Plugins
             if (permsGiven > 0)
             {
                 string file = string.Format("{0}{1}{2}_{3}-{4}.txt", Interface.Oxide.LogDirectory, System.IO.Path.DirectorySeparatorChar, Name.Replace(" ", "").ToLower(), "treasurehunters", DateTime.Now.ToString("yyyy-MM-dd"));
-                Puts(msg(szLogSaved, null, file));
+                Puts(rf(szLogSaved, null, file));
             }
 
             return true;
@@ -2372,7 +2657,7 @@ namespace Oxide.Plugins
                 if (position == Vector3.zero)
                     arg.ReplyWith(msg(szEventFail, player?.UserIDString ?? null));
                 else
-                    ins.Puts(ins.msg(szInvalidConstant, null, boxPrefab));
+                    ins.Puts(ins.rf(szInvalidConstant, null, boxPrefab));
             }
 
             if (num > 1)
@@ -2495,6 +2780,7 @@ namespace Oxide.Plugins
         bool Changed;
         List<string> blacklistedNPCMonuments = new List<string>();
         List<string> blacklistedMonuments = new List<string>();
+        List<MonumentInfo> allowedMonuments = new List<MonumentInfo>();
         List<TreasureItem> chestLoot = new List<TreasureItem>();
         bool showPrefix;
         static bool useRocketOpener;
@@ -2898,34 +3184,24 @@ namespace Oxide.Plugins
             RegisterMessages();
 
             useRocketOpener = Convert.ToBoolean(GetConfig("Rocket Opener", "Enabled", true));
+            numRockets = Convert.ToInt32(GetConfig("Rocket Opener", "Rockets", 10));
+            useFireRockets = Convert.ToBoolean(GetConfig("Rocket Opener", "Use Fire Rockets", false));
+            rocketSpeed = Convert.ToSingle(GetConfig("Rocket Opener", "Speed", 5f).ToString());
 
-            if (useRocketOpener)
-            {
-                numRockets = Convert.ToInt32(GetConfig("Rocket Opener", "Rockets", 10));
-                useFireRockets = Convert.ToBoolean(GetConfig("Rocket Opener", "Use Fire Rockets", false));
-                rocketSpeed = Convert.ToSingle(GetConfig("Rocket Opener", "Speed", 5f).ToString());
-
-                if (rocketSpeed > 0.1f) rocketSpeed = 0.1f;
-            }
+            if (rocketSpeed > 0.1f) rocketSpeed = 0.1f;
 
             useFireballs = Convert.ToBoolean(GetConfig("Fireballs", "Enabled", true));
-
-            if (useFireballs)
-            {
-                fbDamagePerSecond = Convert.ToSingle(GetConfig("Fireballs", "Damage Per Second", 10f).ToString());
-                fbLifeTimeMax = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Max", 10f).ToString());
-                fbLifeTimeMin = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Min", 7.5f).ToString());
-                fbRadius = Convert.ToSingle(GetConfig("Fireballs", "Radius", 1f).ToString());
-                fbTickRate = Convert.ToSingle(GetConfig("Fireballs", "Tick Rate", 1f).ToString());
-                fbGeneration = Convert.ToSingle(GetConfig("Fireballs", "Generation", 5f).ToString());
-                fbWaterToExtinguish = Convert.ToInt32(GetConfig("Fireballs", "Water To Extinguish", 25));
-                secondsBeforeTick = Convert.ToInt32(GetConfig("Fireballs", "Spawn Every X Seconds", 5));
-            }
+            fbDamagePerSecond = Convert.ToSingle(GetConfig("Fireballs", "Damage Per Second", 10f).ToString());
+            fbLifeTimeMax = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Max", 10f).ToString());
+            fbLifeTimeMin = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Min", 7.5f).ToString());
+            fbRadius = Convert.ToSingle(GetConfig("Fireballs", "Radius", 1f).ToString());
+            fbTickRate = Convert.ToSingle(GetConfig("Fireballs", "Tick Rate", 1f).ToString());
+            fbGeneration = Convert.ToSingle(GetConfig("Fireballs", "Generation", 5f).ToString());
+            fbWaterToExtinguish = Convert.ToInt32(GetConfig("Fireballs", "Water To Extinguish", 25));
+            secondsBeforeTick = Convert.ToInt32(GetConfig("Fireballs", "Spawn Every X Seconds", 5));
 
             grantDraw = Convert.ToBoolean(GetConfig("Events", "Grant DDRAW temporarily to players", true));
-
-            if (grantDraw)
-                drawTime = Convert.ToSingle(GetConfig("Events", "Grant Draw Time", 15f).ToString());
+            drawTime = Convert.ToSingle(GetConfig("Events", "Grant Draw Time", 15f).ToString());
 
             if (Config.Get("Treasure") != null)
             {
@@ -2989,7 +3265,16 @@ namespace Oxide.Plugins
             onlyMonuments = Convert.ToBoolean(GetConfig("Monuments", "Auto Spawn At Monuments Only", false));
             allowMonumentChance = Convert.ToSingle(GetConfig("Monuments", "Chance To Spawn At Monuments Instead", 0f));
             undergroundLoot = Convert.ToBoolean(GetConfig("Monuments", "Allow Treasure Loot Underground", false));
-            blacklistedMonuments = (GetConfig("Monuments", "Blacklisted", DefaultBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
+
+            var blMonuments = (GetConfig("Monuments", "Blacklisted", DefaultBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
+
+            foreach (string name in blMonuments)
+            {
+                if (!blacklistedMonuments.Contains(name))
+                {
+                    blacklistedMonuments.Add(name);
+                }
+            }
             
             if (allowMonumentChance < 0f)
                 allowMonumentChance = 0f;
@@ -3065,21 +3350,17 @@ namespace Oxide.Plugins
                 ladderGroup = "treasurehunter";
 
             useLustyMap = Convert.ToBoolean(GetConfig("Lusty Map", "Enabled", true));
+            lustyMapIconFile = Convert.ToString(GetConfig("Lusty Map", "Icon File", "http://i.imgur.com/XoEMTJj.png"));
+            lustyMapIconName = Convert.ToString(GetConfig("Lusty Map", "Icon Name", "dtchest"));
+            lustyMapRotation = Convert.ToSingle(GetConfig("Lusty Map", "Icon Rotation", 0f));
 
-            if (useLustyMap)
+            if (lustyMapIconFile == "special")
             {
-                lustyMapIconFile = Convert.ToString(GetConfig("Lusty Map", "Icon File", "http://i.imgur.com/XoEMTJj.png"));
-                lustyMapIconName = Convert.ToString(GetConfig("Lusty Map", "Icon Name", "dtchest"));
-                lustyMapRotation = Convert.ToSingle(GetConfig("Lusty Map", "Icon Rotation", 0f));
-
-                if (lustyMapIconFile == "special")
-                {
-                    lustyMapIconFile = "http://i.imgur.com/XoEMTJj.png";
-                }
-
-                if (string.IsNullOrEmpty(lustyMapIconFile) || string.IsNullOrEmpty(lustyMapIconName))
-                    useLustyMap = false;
+                lustyMapIconFile = "http://i.imgur.com/XoEMTJj.png";
             }
+
+            if (string.IsNullOrEmpty(lustyMapIconFile) || string.IsNullOrEmpty(lustyMapIconName))
+                useLustyMap = false;
 
             if (!string.IsNullOrEmpty(ladderPerm))
             {
@@ -3214,27 +3495,27 @@ namespace Oxide.Plugins
                                     if (dict["shortname"] != null && dict["shortname"].ToString().Length > 0)
                                         chestLoot.Add(new TreasureItem() { shortname = dict["shortname"], amount = amount, skin = skin });
                                     else
-                                        Puts(msg(szInvalidValue, null, dict["shortname"] == null ? "null" : dict["shortname"]));
+                                        Puts(rf(szInvalidValue, null, dict["shortname"] == null ? "null" : dict["shortname"]));
                                 }
                                 else
-                                    Puts(msg(szInvalidValue, null, dict["skin"]));
+                                    Puts(rf(szInvalidValue, null, dict["skin"]));
                             }
                             else
-                                Puts(msg(szInvalidValue, null, dict["amount"]));
+                                Puts(rf(szInvalidValue, null, dict["amount"]));
                         }
                         else
                         {
                             foreach (var kvp in dict.Where(e => !e.Key.Equals("shortname") && !e.Key.Equals("amount") && !e.Key.Equals("skin")))
-                                Puts(msg(szInvalidKey, null, kvp.Key, kvp.Value));
+                                Puts(rf(szInvalidKey, null, kvp.Key, kvp.Value));
 
                             if (!dict.ContainsKey("amount"))
-                                Puts(msg(szInvalidEntry, null, "amount"));
+                                Puts(rf(szInvalidEntry, null, "amount"));
 
                             if (!dict.ContainsKey("shortname"))
-                                Puts(msg(szInvalidEntry, null, "shortname"));
+                                Puts(rf(szInvalidEntry, null, "shortname"));
 
                             if (!dict.ContainsKey("skin"))
-                                Puts(msg(szInvalidEntry, null, "skin"));
+                                Puts(rf(szInvalidEntry, null, "skin"));
                         }
                     }
                 }
@@ -3267,14 +3548,30 @@ namespace Oxide.Plugins
             return value;
         }
 
+        private Dictionary<string, string> hexColors = new Dictionary<string, string>
+        {
+            ["<color=blue>"] = "<color=#0000FF>",
+            ["<color=red>"] = "<color=#FF0000>",
+            ["<color=yellow>"] = "<color=#FFFF00>",
+            ["<color=lightblue>"] = "<color=#ADD8E6>",
+            ["<color=orange>"] = "<color=#FFA500>",
+            ["<color=silver>"] = "<color=#C0C0C0>",
+            ["<color=magenta>"] = "<color=#FF00FF>",
+            ["<color=green>"] = "<color=#008000>",
+            ["<color=lime>"] = "<color=#00FF00>",
+        };
+
+        string rf(string key, string id = null, params object[] args)
+        {
+            return RemoveFormatting(msg(key, id, args));
+        }
+
         string msg(string key, string id = null, params object[] args)
         {
-            string translate = lang.GetMessage(key, this, id);
+            string message = lang.GetMessage(key, this, id);
 
-            if (translate == key) // message does not exist?
-                translate = lang.GetMessage(key, this, null);
-
-            string message = string.IsNullOrEmpty(id) ? RemoveFormatting(translate) : translate;
+            if (message == key) // message does not exist?
+                message = lang.GetMessage(key, this, null);
 
             if (!string.IsNullOrEmpty(id) && key.Length > 0 && key[0] == 'p' && showPrefix)
             {
@@ -3289,40 +3586,18 @@ namespace Oxide.Plugins
             if (!showPrefix && key.Length > 0 && key[0] == 'p')
                 message = "<color=#C0C0C0>" + message;
 
-            if (message.Contains("=blue"))
-                message = message.Replace("=blue", "=#0000FF");
+            foreach (var entry in hexColors)
+            {
+                if (message.Contains(entry.Key))
+                {
+                    message = message.Replace(entry.Key, entry.Value);
+                }
+            }
 
-            if (message.Contains("=red"))
-                message = message.Replace("=red", "=#FF0000");
-
-            if (message.Contains("=yellow"))
-                message = message.Replace("=yellow", "=#FFFF00");
-
-            if (message.Contains("=lightblue"))
-                message = message.Replace("=lightblue", "=#ADD8E6");
-
-            if (message.Contains("=orange"))
-                message = message.Replace("=orange", "=#FFA500");
-
-            if (message.Contains("=silver"))
-                message = message.Replace("=silver", "=#C0C0C0");
-
-            if (message.Contains("=magenta"))
-                message = message.Replace("=magenta", "=#FF00FF");
-
-            if (message.Contains("=green"))
-                message = message.Replace("=green", "=#008000");
-
-            int indices = message.Count(c => c == '{');
-            return indices > 0 ? string.Format(message, args) : message;
+            return message.Contains("{") ? string.Format(message, args) : message;
         }
 
         string RemoveFormatting(string source) => source.Contains(">") ? System.Text.RegularExpressions.Regex.Replace(source, "<.*?>", string.Empty) : source;
-
-        static void SendDangerousMessage(BasePlayer player, Vector3 eventPos, string message)
-        {
-            player.ChatMessage(message);
-        }
         #endregion
     }
 }
