@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.2")]
+    [Info("Dangerous Treasures", "nivex", "1.2.3")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -1382,16 +1382,13 @@ namespace Oxide.Plugins
             RaycastHit hit;
             position.y += 200f;
 
-            if (Physics.Raycast(position, Vector3.down, out hit))
+            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightMask, QueryTriggerInteraction.Ignore))
             {
-                if (hit.collider?.gameObject == null)
-                    return Vector3.zero;
-
                 if (!BlockedLayers.Contains(hit.collider.gameObject.layer))
                 {
                     position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
 
-                    if (!IsLayerBlocked(position, eventRadius, blockedMask))
+                    if (!IsLayerBlocked(position, eventRadius + 25f, blockedMask))
                         return position;
                 }
             }
