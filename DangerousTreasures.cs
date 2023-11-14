@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.5")]
+    [Info("Dangerous Treasures", "nivex", "1.2.6")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -58,7 +58,7 @@ namespace Oxide.Plugins
         Dictionary<string, List<ulong>> skinsCache = new Dictionary<string, List<ulong>>();
         Dictionary<string, List<ulong>> workshopskinsCache = new Dictionary<string, List<ulong>>();
         static Dictionary<uint, TreasureChest> treasureChests = new Dictionary<uint, TreasureChest>();
-        static Dictionary<uint, string> treasureLooters = new Dictionary<uint, string>();
+        static Dictionary<uint, string> looters = new Dictionary<uint, string>();
         List<uint> storage = new List<uint>();
 
         class MapInfo
@@ -989,8 +989,8 @@ namespace Oxide.Plugins
                 return;
 
             if (entity as Scientist != null)
-            { 
-                AllScientists.SetValue((entity as Scientist), new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException
+            {
+                AllScientists.SetValue((entity as Scientist), new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #1
             }
             else if (entity is NPCPlayerCorpse)
             {
@@ -1072,10 +1072,10 @@ namespace Oxide.Plugins
             if (!init || player == null || entity?.net == null || !(entity is StorageContainer) || !treasureChests.ContainsKey(entity.net.ID))
                 return;
 
-            if (treasureLooters.ContainsKey(entity.net.ID))
-                treasureLooters.Remove(entity.net.ID);
+            if (looters.ContainsKey(entity.net.ID))
+                looters.Remove(entity.net.ID);
 
-            treasureLooters.Add(entity.net.ID, player.UserIDString);
+            looters.Add(entity.net.ID, player.UserIDString);
         }
 
         void OnItemRemovedFromContainer(ItemContainer container, Item item)
@@ -1094,16 +1094,16 @@ namespace Oxide.Plugins
 
                 if (looter != null)
                 {
-                    if (treasureLooters.ContainsKey(box.net.ID))
-                        treasureLooters.Remove(box.net.ID);
+                    if (looters.ContainsKey(box.net.ID))
+                        looters.Remove(box.net.ID);
 
-                    treasureLooters.Add(box.net.ID, looter.UserIDString);
+                    looters.Add(box.net.ID, looter.UserIDString);
                 }
 
                 if (box.inventory.itemList.Count == 0)
                 {
-                    if (looter == null && treasureLooters.ContainsKey(box.net.ID))
-                        looter = BasePlayer.activePlayerList.Find(x => x.UserIDString == treasureLooters[box.net.ID]);
+                    if (looter == null && looters.ContainsKey(box.net.ID))
+                        looter = BasePlayer.activePlayerList.Find(x => x.UserIDString == looters[box.net.ID]);
 
                     if (looter != null)
                     {
@@ -1389,8 +1389,10 @@ namespace Oxide.Plugins
                 {
                     position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
 
-                    if (!IsLayerBlocked(position, eventRadius + 25f, blockedMask))
+                    if (!IsLayerBlocked(position, eventRadius + 25f, obstructionMask))
+                    {
                         return position;
+                    }
                 }
             }
 
@@ -1402,15 +1404,7 @@ namespace Oxide.Plugins
             var colliders = Pool.GetList<Collider>();
             Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Collide);
 
-            foreach (var collider in colliders.ToList())
-            {
-                var apex = collider.GetComponentInParent<NPCPlayerApex>();
-
-                if (apex != null)
-                {
-                    colliders.Remove(collider);
-                }
-            }
+            colliders.RemoveAll(collider => collider.GetComponentInParent<NPCPlayerApex>() != null || !collider.GetComponentInParent<BaseEntity>().OwnerID.IsSteamId());
 
             bool blocked = colliders.Count > 0;
 
@@ -1795,10 +1789,13 @@ namespace Oxide.Plugins
         static NPCPlayerApex SpawnNPC(Vector3 pos, Quaternion rot, bool murd, TreasureChest chest)
         {
             string prefabname = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
-            var apex = GameManager.server.CreateEntity(prefabname, pos, rot, true) as NPCPlayerApex;
+            var apex = GameManager.server.CreateEntity(prefabname, pos, rot, false) as NPCPlayerApex;
 
             if (apex == null)
                 return null;
+
+            if (!murd)
+                AllScientists.SetValue(apex as Scientist, new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #2
 
             var epos = apex.transform.position;
 
@@ -1806,8 +1803,7 @@ namespace Oxide.Plugins
             apex.CommunicationRadius = 0;
             apex.GetComponent<FacepunchBehaviour>().CancelInvoke(new Action(apex.RadioChatter));
             apex.RadioEffect = new GameObjectRef();
-            //apex.Stats.AggressionRange = 200f;
-            //apex.Stats.VisionRange = 200f;
+            apex.gameObject.SetActive(true);
             apex.Stats.MaxRoamRange = eventRadius;
 
             var randomPoint = chest.containerPos + UnityEngine.Random.insideUnitSphere * (eventRadius * 0.85f);
@@ -2603,7 +2599,8 @@ namespace Oxide.Plugins
             {
                 return new List<object>
                 {
-                    "Outpost"
+                    "Outpost",
+                    "Junkyard"
                 };
             }
         }
@@ -2615,7 +2612,8 @@ namespace Oxide.Plugins
                 return new List<object>
                 {
                     "Bandit Camp",
-                    "Outpost"
+                    "Outpost",
+                    "Junkyard"
                 };
             }
         }
