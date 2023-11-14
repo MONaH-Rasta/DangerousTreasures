@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.7")]
+    [Info("Dangerous Treasures", "nivex", "1.2.8")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -237,6 +237,7 @@ namespace Oxide.Plugins
             float claimTime;
             float lastTick;
             Vector3 lastFirePos;
+            bool firstEntered;
 
             Dictionary<ulong, float> fireticks = new Dictionary<ulong, float>();
             List<FireBall> fireballs = new List<FireBall>();
@@ -360,6 +361,15 @@ namespace Oxide.Plugins
 
                 if (!player || player is NPCPlayer || players.Contains(player.userID))
                     return;
+
+                if (showFirstEntered && !firstEntered)
+                {
+                    firstEntered = true;
+                    string eventPos = FormatGridReference(containerPos);
+
+                    foreach (var target in BasePlayer.activePlayerList)
+                        target.ChatMessage(ins.msg("OnFirstPlayerEntered", target.UserIDString, target.displayName, eventPos));
+                }
 
                 player.ChatMessage(ins.msg(useFireballs ? szProtected : szUnprotected, player.UserIDString));
                 players.Add(player.userID);
@@ -1790,7 +1800,7 @@ namespace Oxide.Plugins
             for (int i = 0; i < amount; i++)
             {
                 var spawnpoint = chest.GetSpawn();
-                var npc = SpawnNPC(spawnpoint, rot, spawnNpcsBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : spawnNpcsMurderers, chest);
+                var npc = SpawnNPC(spawnpoint, rot, spawnScientistsOnly ? false : spawnNpcsBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : spawnNpcsMurderers, chest);
 
                 if (npc == null)
                 {
@@ -1826,8 +1836,7 @@ namespace Oxide.Plugins
             apex.finalDestination = randomPoint;
             apex.Destination = randomPoint;
 
-            if (spawnNpcsRandomNames)
-                apex.displayName = Get(apex.userID);
+            apex.displayName = randomNames.Count > 0 ? randomNames.GetRandom() : Get(apex.userID); 
 
             ins.timer.Once(10f, () => UpdateDestination(apex, epos, chest));
             return apex;
@@ -2564,16 +2573,18 @@ namespace Oxide.Plugins
         static float rocketDamageAmount;
         static bool spawnNpcs;
         static bool spawnNpcsMurderers;
+        static bool spawnScientistsOnly;
         static bool spawnNpcsBoth;
         static int spawnNpcsAmount;
         static bool spawnsDespawnInventory;
         static bool showXZ;
-        static bool spawnNpcsRandomNames;
         static bool spawnNpcsRandomAmount;
         bool onlyMonuments;
         float allowMonumentChance;
         static bool undergroundLoot;
         bool truePVE;
+        static bool showFirstEntered;
+        static List<string> randomNames = new List<string>();
 
         List<object> DefaultTimesInSeconds
         {
@@ -2844,6 +2855,10 @@ namespace Oxide.Plugins
                 {
                     {"en", "Opened {0}/{1} events."},
                 }},
+                {"OnFirstPlayerEntered", new Dictionary<string, string>()
+                {
+                    {"en", "<color=yellow>{0}</color> is the first to enter the dangerous treasure event at <color=yellow>{1}</color>"},
+                }},
             };
         }
 
@@ -3000,6 +3015,7 @@ namespace Oxide.Plugins
             showOpened = Convert.ToBoolean(GetConfig("Event Messages", "Show Opened Message", true));
             showStarted = Convert.ToBoolean(GetConfig("Event Messages", "Show Started Message", true));
             showPrefix = Convert.ToBoolean(GetConfig("Event Messages", "Show Prefix", true));
+            showFirstEntered = Convert.ToBoolean(GetConfig("Event Messages", "Show First Player Entered", false));
 
             newmanMode = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Fire Aura", false));
             newmanProtect = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Other Harm", false));
@@ -3104,10 +3120,11 @@ namespace Oxide.Plugins
             spawnNpcsAmount = Convert.ToInt32(GetConfig("NPCs", "Amount To Spawn", 2));
             spawnNpcsBoth = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers And Scientists", false));
             spawnNpcsMurderers = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers", false));
+            spawnScientistsOnly = Convert.ToBoolean(GetConfig("NPCs", "Spawn Scientists Only", false));
             spawnsDespawnInventory = Convert.ToBoolean(GetConfig("NPCs", "Despawn Inventory On Death", true));
-            spawnNpcsRandomNames = Convert.ToBoolean(GetConfig("NPCs", "Generate Random Names", true));
             spawnNpcsRandomAmount = Convert.ToBoolean(GetConfig("NPCs", "Spawn Random Amount", false));
             blacklistedNPCMonuments = (GetConfig("NPCs", "Blacklisted", DefaultNPCBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
+            randomNames = (GetConfig("NPCs", "Random Names", new List<object>()) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
 
             showXZ = Convert.ToBoolean(GetConfig("Settings", "Show X Z Coordinates", false));
 
