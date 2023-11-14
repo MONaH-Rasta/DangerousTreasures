@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Facepunch;
@@ -14,12 +14,23 @@ using System.Reflection;
     TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
     TODO: Item rarity
 
-    Fix for Npcs > Despawn Inventory On Death > true @Toliman
+    Fix for events spawning in rocks
+    Fix for npcs spawning in rocks
+    Fix for fire aura not activating on players
+    Fix for Npcs not returning to event zone when too far away and out of combat
+    Added another check to prevent event from starting when max events is reached
+    New method for retrieving workship skins as the former is no longer available
+    Npcs and animals will no longer chase each other, except against IHTNAgent Npcs
+    Npcs will now start roaming immediately upon spawn, giving players the challenge upfront
+    Npcs are now immune to all damage by non-players, including but not limited to fire and explosions
+    Improved Npcs movement
+    Removed Npcs warping back to chest position
+    Various code bits made standard
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.9")]
+    [Info("Dangerous Treasures", "nivex", "1.4.0")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -45,9 +56,10 @@ namespace Oxide.Plugins
         StoredData storedData = new StoredData();
         Vector3 sd_customPos;
 
-        static int playerMask = LayerMask.GetMask("Player (Server)");
-        static int obstructionMask = LayerMask.GetMask(new[] { "Player (Server)", "Construction", "Deployed", "Clutter" });
-        static int heightMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed", "Clutter" });
+        int worldLayer = LayerMask.GetMask("World");
+        static int playerLayer = LayerMask.GetMask("Player (Server)");
+        int obstructionLayer = LayerMask.GetMask(new[] { "Player (Server)", "Construction", "Deployed", "Clutter" });
+        static int heightLayer = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed", "Clutter" });
         List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
 
         static List<MonumentInfo> monuments = new List<MonumentInfo>(); // positions of monuments on the server
@@ -144,9 +156,9 @@ namespace Oxide.Plugins
                     if (!missile || missile.IsDestroyed)
                         return;
 
-                    var list = new List<BasePlayer>();
+                    var list = Pool.GetList<BasePlayer>();
                     var entities = Pool.GetList<BaseEntity>();
-                    Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerMask, QueryTriggerInteraction.Ignore);
+                    Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerLayer, QueryTriggerInteraction.Ignore);
 
                     foreach (var entity in entities)
                     {
@@ -169,7 +181,7 @@ namespace Oxide.Plugins
                     if (list.Count > 0)
                     {
                         target = list.GetRandom(); // pick a random player
-                        list.Clear();
+                        Pool.FreeList<BasePlayer>(ref list);
                     }
                     else if (!targetChest)
                     {
@@ -273,7 +285,46 @@ namespace Oxide.Plugins
                 }
             }
 
-            public bool HasNPC(ulong userID)
+            public static bool HasNPC(ulong userID)
+            {
+                foreach (var x in treasureChests.Values)
+                {
+                    if (x.hasNPC(userID))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public static TreasureChest GetNPC(ulong userID)
+            {
+                foreach (var x in treasureChests.Values)
+                {
+                    if (x.hasNPC(userID))
+                    {
+                        return x;
+                    }
+                }
+
+                return null;
+            }
+
+            public static bool HasNPC(ulong userID, ulong userID2)
+            {
+                foreach (var x in treasureChests.Values)
+                {
+                    if (x.hasNPC(userID) && x.hasNPC(userID2))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private bool hasNPC(ulong userID)
             {
                 foreach(var x in npcs)
                 {
@@ -324,12 +375,12 @@ namespace Oxide.Plugins
                     }
                 }
 
-                if (narrowed.Count > 0 && narrowed.Count >= spawnNpcsAmount)
+                if (narrowed.Count > 0) // && narrowed.Count >= spawnNpcsAmount)
                 {
                     return narrowed.GetRandom();
                 }
 
-                return spawnpoints.Count > 2 ? spawnpoints.GetRandom() : containerPos;
+                return spawnpoints.Count > 0 ? spawnpoints.GetRandom() : containerPos;
             }
 
             void Awake()
@@ -411,9 +462,9 @@ namespace Oxide.Plugins
                 if (started)
                     return;
 
-                var player = col.GetComponentInParent<BasePlayer>();
+                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
 
-                if (!player || player.IsNpc || players.Contains(player.userID))
+                if (!player || player is NPCPlayerApex || players.Contains(player.userID))
                     return;
 
                 if (showFirstEntered && !firstEntered)
@@ -431,9 +482,9 @@ namespace Oxide.Plugins
                 if (!newmanProtect)
                     return;
 
-                var player = col.GetComponentInParent<BasePlayer>();
+                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
 
-                if (!player || player.IsNpc)
+                if (!player || player is NPCPlayerApex)
                     return;
 
                 if (protects.Contains(player.net.ID))
@@ -454,9 +505,9 @@ namespace Oxide.Plugins
 
                 lastTick = Time.time;
 
-                var player = col.GetComponentInParent<BasePlayer>();
+                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
 
-                if (!player || player.IsNpc)
+                if (!player || player is NPCPlayerApex)
                     return;
 
                 if (newmanMode || newmanProtect)
@@ -540,6 +591,14 @@ namespace Oxide.Plugins
                 }
             }
 
+            private Vector3 GetRandomPoint
+            {
+                get
+                {
+                    return containerPos + UnityEngine.Random.insideUnitSphere * eventRadius / 2;
+                }
+            }
+
             NPCPlayerApex SpawnNPC(Vector3 pos, Quaternion rot, bool murd)
             {
                 string prefabname = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
@@ -552,21 +611,20 @@ namespace Oxide.Plugins
                     AllScientists.SetValue(apex as Scientist, new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #2
 
                 apex.Spawn();
+                apex.Hurt(1f);
+                apex.Heal(1f);
                 apex.CommunicationRadius = 0;
-                apex.GetComponent<FacepunchBehaviour>().CancelInvoke(new Action(apex.RadioChatter));
+                apex.GetComponent<FacepunchBehaviour>().CancelInvoke(new Action(apex.RadioChatter)); // overridden when coroutine called?
                 apex.RadioEffect = new GameObjectRef();
                 apex.gameObject.SetActive(true);
                 apex.Stats.MaxRoamRange = eventRadius * 0.85f;
                 apex.displayName = randomNames.Count > 0 ? randomNames.GetRandom() : Get(apex.userID);
 
-                var randomPoint = containerPos + UnityEngine.Random.insideUnitSphere * 15f;
-
-                apex.CurrentBehaviour = BaseNpc.Behaviour.Wander;
+                var randomPoint = GetRandomPoint;
+                apex.finalDestination = randomPoint;
                 apex.Destination = randomPoint;
-
-                if (apex.IsNavRunning())
-                    apex.GetNavAgent.SetDestination(randomPoint);
-                else apex.finalDestination = randomPoint;
+                apex.IsStopped = false;
+                apex.SetFact(NPCPlayerApex.Facts.Speed, (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
 
                 if (murd && murdererItems.Count > 0)
                 {
@@ -597,53 +655,43 @@ namespace Oxide.Plugins
                 }
 
                 //apex.FindClosestCoverToUs();
-
-                ins.timer.Once(5f, () => UpdateDestination(apex, randomPoint));
+                ins.timer.Once(2f, () => UpdateDestination(apex, randomPoint));
                 return apex;
             }
+
+
 
             void UpdateDestination(NPCPlayerApex apex, Vector3 pos)
             {
                 if (apex == null || apex.IsDestroyed)
                     return;
 
-                if (apex.GetFact(NPCPlayerApex.Facts.IsAggro) == 0)
+                if (apex.GetFact(NPCPlayerApex.Facts.IsAggro) == 0 || apex.CombatTarget == null)
                 {
-                    float distance = Vector3.Distance(apex.transform.position, pos);
-
-                    if (distance > eventRadius * 2f)
+                    float distance = (apex.transform.position - pos).magnitude;
+                    bool tooFar = distance > eventRadius * 1.25f;
+                    
+                    if (tooFar || distance < eventRadius * 0.5f)
                     {
-                        var spawnpoint = GetSpawn();
+                        var randomPoint = GetRandomPoint;
 
                         apex.CurrentBehaviour = BaseNpc.Behaviour.Wander;
-                        apex.Destination = spawnpoint;
-
-                        if (apex.IsNavRunning())
-                            apex.GetNavAgent.SetDestination(spawnpoint);
-                        else apex.finalDestination = spawnpoint;
-
-                        apex.Pause();
-                        apex.ServerPosition = spawnpoint;
-                        apex.Resume();
-
-                        pos = spawnpoint;
-                    }
-                    else if (distance > eventRadius * 0.75f || distance < eventRadius * 0.25f)
-                    {
-                        var randomPoint = containerPos + UnityEngine.Random.insideUnitSphere * 15f;
-
-                        apex.CurrentBehaviour = BaseNpc.Behaviour.Wander;
+                        apex.finalDestination = randomPoint;
                         apex.Destination = randomPoint;
-
-                        if (apex.IsNavRunning())
-                            apex.GetNavAgent.SetDestination(randomPoint);
-                        else apex.finalDestination = randomPoint;
+                        apex.IsStopped = false;
+                        apex.SetFact(NPCPlayerApex.Facts.Speed, tooFar ? (byte)NPCPlayerApex.SpeedEnum.Run : (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
 
                         pos = randomPoint;
                     }
                 }
 
-                ins.timer.Once(5f, () => UpdateDestination(apex, pos));
+                if (apex.health > 5f)
+                {
+                    apex.Hurt(1f);
+                    apex.Heal(1f);
+                }
+
+                ins.timer.Once(2f, () => UpdateDestination(apex, pos));
             }
 
             public void UpdateMarker()
@@ -769,7 +817,7 @@ namespace Oxide.Plugins
                 missilePos.y = 200f;
 
                 RaycastHit hit;
-                if (Physics.Raycast(missilePos, Vector3.down, out hit, heightMask)) // don't want the missile to explode before it leaves its spawn location
+                if (Physics.Raycast(missilePos, Vector3.down, out hit, heightLayer)) // don't want the missile to explode before it leaves its spawn location
                     missilePos.y = Mathf.Max(hit.point.y, y);
 
                 var missile = GameManager.server.CreateEntity(rocketResourcePath, missilePos, new Quaternion(), true) as TimedExplosive;
@@ -1093,9 +1141,9 @@ namespace Oxide.Plugins
 
                     if (AssignTreasureHunters(ladder))
                     {
-                        foreach (var kvp in storedData.Players.ToList())
+                        foreach (string key in storedData.Players.Keys)
                         {
-                            storedData.Players[kvp.Key].StolenChestsSeed = 0;
+                            storedData.Players[key].StolenChestsSeed = 0;
                         }
                     }
                 }
@@ -1189,11 +1237,10 @@ namespace Oxide.Plugins
                 allowMonumentChance = 0f;
             }
 
-            if (includeWorkshopBox || includeWorkshopTreasure)
-                webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
-
             init = true;
             RemoveAllTemporaryMarkers();
+
+            if (includeWorkshopBox || includeWorkshopTreasure) SetWorkshopIDs(); // webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
         }
 
         void Unload()
@@ -1246,42 +1293,30 @@ namespace Oxide.Plugins
 
         object CanBradleyApcTarget(BradleyAPC apc, BaseEntity entity)
         {
-            if (entity is NPCPlayer)
+            if (entity is NPCPlayer && TreasureChest.HasNPC(entity.GetComponent<NPCPlayer>().userID))
             {
-                var npc = entity as NPCPlayer;
-
-                foreach(var x in treasureChests.Values)
-                {
-                    if (x.HasNPC(npc.userID))
-                    {
-                        return false;
-                    }
-                }
+                return false;
             }
 
             return null;
         }
 
-        object OnNpcTarget(NPCPlayerApex npc, BaseEntity entity)
+        object OnNpcTarget(BaseEntity ent1, BaseEntity ent2)
         {
-            if (entity is BasePlayer)
-            {
-                var player = entity as BasePlayer;
+            var p1 = ent1 as BasePlayer;
+            var p2 = ent2 as BasePlayer;
 
-                if (player.net != null && newmanProtections.Contains(player.net.ID))
-                {
-                    return 0f;
-                }
-                else if (player is NPCPlayer)
-                {
-                    foreach (var x in treasureChests.Values)
-                    {
-                        if (x.HasNPC(npc.userID) && x.HasNPC(player.userID))
-                        {
-                            return true;
-                        }
-                    }
-                }
+            if (p1 && p2)
+            {
+                return TreasureChest.HasNPC(p1.userID, p2.userID) || p2.net != null && newmanProtections.Contains(p2.net.ID) ? (object)true : null;
+            }
+            else if (p1 && ent2 is BaseNpc)
+            {
+                return TreasureChest.HasNPC(p1.userID) ? (object)true : null;
+            }
+            else if (p2 && ent1 is BaseNpc)
+            {
+                return TreasureChest.HasNPC(p2.userID) ? (object)true : null;
             }
 
             return null;
@@ -1300,21 +1335,16 @@ namespace Oxide.Plugins
             if (!init || !player || !(player is NPCPlayer))
                 return;
 
-            var npc = player as NPCPlayer;
-
-            foreach (var chest in treasureChests.Values)
+            var chest = TreasureChest.GetNPC(player.userID);
+            
+            if (chest != null)
             {
-                if (chest.HasNPC(npc.userID))
+                player.svActiveItemID = 0;
+                player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+
+                if (unlockWhenNpcsDie && chest.npcs.Count <= 1)
                 {
-                    player.svActiveItemID = 0;
-                    player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
-
-                    if (unlockWhenNpcsDie && chest.npcs.Count <= 1)
-                    {
-                        chest.Unlock();
-                    }
-
-                    break;
+                    chest.Unlock();
                 }
             }
         }
@@ -1615,7 +1645,7 @@ namespace Oxide.Plugins
             {
                 var attacker = hitInfo?.InitiatorPlayer ?? null;
 
-                if (attacker && !attacker.IsNpc)
+                if (attacker && !(attacker is NPCPlayerApex))
                 {
                     ulong uid = attacker.userID;
 
@@ -1635,30 +1665,12 @@ namespace Oxide.Plugins
 
             var npc = entity as NPCPlayer;
 
-            if (npc == null)
+            if (!npc || !TreasureChest.HasNPC(npc.userID))
                 return;
 
-            bool hasNpc = false;
-
-            foreach (var x in treasureChests.Values)
+            if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions/other
             {
-                if (x.HasNPC(npc.userID))
-                {
-                    hasNpc = true;
-                    break;
-                }
-            }
-
-            if (!hasNpc)
-                return;
-
-            if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions
-            {
-                if (hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Explosion || hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Heat)
-                {
-                    hitInfo.damageTypes = new DamageTypeList();
-                    return;
-                }
+                hitInfo.damageTypes = new DamageTypeList();
             }
         }
 
@@ -1825,13 +1837,13 @@ namespace Oxide.Plugins
             RaycastHit hit;
             position.y += 200f;
 
-            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightMask, QueryTriggerInteraction.Ignore))
+            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightLayer, QueryTriggerInteraction.Ignore))
             {
                 if (!BlockedLayers.Contains(hit.collider.gameObject.layer))
                 {
                     position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
 
-                    if (!IsLayerBlocked(position, eventRadius + 25f, obstructionMask))
+                    if (!IsLayerBlocked(position, eventRadius + 25f, obstructionLayer))
                     {
                         return position;
                     }
@@ -1843,16 +1855,33 @@ namespace Oxide.Plugins
 
         public bool IsLayerBlocked(Vector3 position, float radius, int mask)
         {
+            if (IsInOrOnRock(position))
+            {
+                return true;
+            }
+
             var colliders = Pool.GetList<Collider>();
             Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
 
-            colliders.RemoveAll(collider => collider.GetComponentInParent<NPCPlayerApex>() != null || (!collider.GetComponentInParent<BaseEntity>()?.OwnerID.IsSteamId() ?? true));
+            colliders.RemoveAll(collider => collider.GetComponent<NPCPlayerApex>() != null || (!collider.GetComponent<BaseEntity>()?.OwnerID.IsSteamId() ?? true));
 
             bool blocked = colliders.Count > 0;
 
             Pool.FreeList<Collider>(ref colliders);
 
             return blocked;
+        }
+
+        private bool IsInOrOnRock(Vector3 position)
+        {
+            var colliders = Physics.OverlapSphere(position, 0.25f, worldLayer, QueryTriggerInteraction.Ignore);
+            foreach (var collider in colliders)
+            {
+                var meshCollider = collider.gameObject?.GetComponent<MeshCollider>();
+                if (meshCollider == null || !meshCollider.sharedMesh.name.StartsWith("rock_")) continue;
+                return true;
+            }
+            return false;
         }
 
         public Vector3 GetRandomMonumentDropPosition(Vector3 position)
@@ -1869,11 +1898,11 @@ namespace Oxide.Plugins
                         randomPoint.y = 100f;
 
                         RaycastHit hit;
-                        if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightMask, QueryTriggerInteraction.Ignore))
+                        if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightLayer, QueryTriggerInteraction.Ignore))
                         {
                             if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
                             {
-                                if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionMask))
+                                if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionLayer))
                                 {
                                     return hit.point;
                                 }
@@ -1930,7 +1959,7 @@ namespace Oxide.Plugins
                     continue;
                 }
 
-                if (!IsLayerBlocked(mon.transform.position, eventRadius + 25f, obstructionMask))
+                if (!IsLayerBlocked(mon.transform.position, eventRadius + 25f, obstructionLayer))
                 {
                     monument = mon;
                     break;
@@ -2026,26 +2055,71 @@ namespace Oxide.Plugins
             }
         }
 
+        void SetWorkshopIDs()
+        {
+            try
+            {
+                foreach (var def in ItemManager.GetItemDefinitions())
+                {
+                    var skins = Rust.Workshop.Approved.All.Where(skin => !string.IsNullOrEmpty(skin.Skinnable.ItemName) && skin.Skinnable.ItemName == def.shortname).Select(skin => System.Convert.ToUInt64(skin.WorkshopdId)).ToList();
+
+                    if (skins != null && skins.Count > 0)
+                    {
+                        if (!workshopskinsCache.ContainsKey(def.shortname))
+                        {
+                            workshopskinsCache.Add(def.shortname, new List<ulong>());
+                        }
+
+                        foreach (ulong skin in skins)
+                        {
+                            if (!workshopskinsCache[def.shortname].Contains(skin))
+                            {
+                                workshopskinsCache[def.shortname].Add(skin);
+                            }
+                        }
+
+                        skins.Clear();
+                        skins = null;
+                    }
+                }
+            }
+            catch { }
+        }
+
         List<ulong> GetItemSkins(ItemDefinition def)
         {
             if (!skinsCache.ContainsKey(def.shortname))
             {
-                var skins = new List<ulong>();
-                skins.AddRange(def.skins.Select(skin => Convert.ToUInt64(skin.id)));
+                var skins = def.skins.Select(skin => Convert.ToUInt64(skin.id)).ToList();
 
                 if ((def.shortname == boxShortname && includeWorkshopBox) || (def.shortname != boxShortname && includeWorkshopTreasure))
                 {
                     if (workshopskinsCache.ContainsKey(def.shortname))
                     {
-                        skins.AddRange(workshopskinsCache[def.shortname]);
+                        foreach (ulong skin in workshopskinsCache[def.shortname])
+                        {
+                            if (!skins.Contains(skin))
+                            {
+                                skins.Add(skin);
+                            }
+                        }
+
                         workshopskinsCache.Remove(def.shortname);
                     }
                 }
 
-                if (skins.Contains(0uL))
-                    skins.Remove(0uL);
+                skinsCache.Add(def.shortname, new List<ulong>());
 
-                skinsCache.Add(def.shortname, skins);
+                foreach (ulong skin in skins)
+                {
+                    if (!skinsCache[def.shortname].Contains(skin))
+                    {
+                        skinsCache[def.shortname].Add(skin);
+                    }
+                }
+
+                skins.Clear();
+                skins = null;
             }
 
             return skinsCache[def.shortname];
@@ -2068,12 +2142,12 @@ namespace Oxide.Plugins
             {
                 return eventPos;
             }
-            
+
             if (player)
             {
                 RaycastHit hit;
 
-                if (!Physics.Raycast(player.eyes.HeadRay(), out hit, Mathf.Infinity, heightMask))
+                if (!Physics.Raycast(player.eyes.HeadRay(), out hit, Mathf.Infinity, heightLayer))
                 {
                     return Vector3.zero;
                 }
@@ -2289,11 +2363,6 @@ namespace Oxide.Plugins
         {
             eventTimer = timer.Once(1f, () => CheckSecondsUntilEvent());
 
-            if (treasureChests.Count >= maxEvents)
-            {
-                return;
-            }
-
             var eventInterval = UnityEngine.Random.Range(eventIntervalMin, eventIntervalMax);
             float stamp = Time.realtimeSinceStartup;
 
@@ -2306,20 +2375,16 @@ namespace Oxide.Plugins
                 return;                
             }
 
-            if (storedData.SecondsUntilEvent - stamp <= 0)
+            if (storedData.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < maxEvents)
             {
                 if (BasePlayer.activePlayerList.Count >= playerLimit)
                 {
-                    var eventPos = GetNewEvent();
-
-                    if (eventPos == Vector3.zero) // for servers with high entity counts
+                    for (int retry = 0; retry < 3; retry++) // for servers with high entity counts
                     {
-                        int retries = 3;
-
-                        do
+                        if (treasureChests.Count >= maxEvents || GetNewEvent() != Vector3.zero)
                         {
-                            eventPos = GetNewEvent();
-                        } while (eventPos == Vector3.zero && --retries > 0);
+                            break;
+                        }
                     }
 
                     storedData.SecondsUntilEvent = stamp + eventInterval;
