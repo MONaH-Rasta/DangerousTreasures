@@ -13,30 +13,17 @@ using System.Reflection;
 /* 
     TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
 
-    You may no longer loot the treasure while mounted (exploit)
-    Bandit Camp is now blacklisted by default
-    Grid position is now shown
-
-    Added NPCs > Murderer Items > default: "metal.facemask", "metal.plate.torso", "pants", "tactical.gloves", "boots.frog", "tshirt"
-    Added TruePVE > Allow Building Damage At Events > false @mtpolo
-    Added Unlock Time > Unlock When Npcs Die > false @Covfefe
-    Added Unlock Time > Require All Npcs Die Before Unlocking > true @Covfefe
-
-    Fixed exploit where codelocks could be added to chests by players when NPCs were disabled in the config
-    Fixed issue where chest could spawn the wrong number of items
-    Fixed for Rust update
-    Fixed OnEntitySpawned.NullReferenceException 
-    Fixed SpawnNPC.NullReferenceException
-    Fix for PVP at Events with TruePVE @electrikbox
+    Implemented `Require All Npcs Die Before Unlocking` @LucasMacD
+    Added automatic support for Marker Manager @N8CWG1990
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.3")]
+    [Info("Dangerous Treasures", "nivex", "1.3.4")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
-        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements;
+        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager;
         public static readonly FieldInfo AllScientists = typeof(Scientist).GetField("AllScientists", (BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.NonPublic));
 
         bool debug = false;
@@ -258,6 +245,7 @@ namespace Oxide.Plugins
             float lastTick;
             Vector3 lastFirePos;
             bool firstEntered;
+            bool markerCreated;
 
             VendingMachineMapMarker vendingMarker;
             MapMarkerGenericRadius genericMarker;
@@ -650,14 +638,18 @@ namespace Oxide.Plugins
 
             public void UpdateMarker()
             {
-                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                if (markerCreated)
                 {
-                    vendingMarker.Kill();
+                    if (vendingMarker != null && !vendingMarker.IsDestroyed) vendingMarker.SendNetworkUpdate();
+                    if (genericMarker != null && !genericMarker.IsDestroyed) genericMarker.SendUpdate();
+                    return;
                 }
 
-                if (genericMarker != null && !genericMarker.IsDestroyed)
+                if (ins.MarkerManager != null)
                 {
-                    genericMarker.Kill();
+                    Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.1f, "Dangerous Treasure Event", "FF0000", "00FFFFFF");
+                    markerCreated = true;
+                    return;
                 }
 
                 int markerCount = 0;
@@ -694,6 +686,8 @@ namespace Oxide.Plugins
                     genericMarker.Spawn();
                     genericMarker.SendUpdate();
                 }
+
+                markerCreated = true;
             }
 
             void KillNpc()
@@ -896,16 +890,15 @@ namespace Oxide.Plugins
                     unlock.Destroy();
                 }
 
-                foreach(var npc in npcs)
+                if (requireAllNpcsDie)
                 {
-                    if (npc != null && npc.IsAlive())
+                    foreach (var npc in npcs)
                     {
-                        ins.timer.Once(1f, () =>
+                        if (npc != null && npc.IsAlive())
                         {
-                            Unlock();
-                        });
-
-                        return;
+                            ins.timer.Once(1f, () => Unlock());
+                            return;
+                        }
                     }
                 }
 
@@ -1676,7 +1669,12 @@ namespace Oxide.Plugins
                 }
 
                 Subscribe(nameof(OnEntitySpawned));
-                Subscribe(nameof(OnPlayerInit));
+
+                if (MarkerManager == null)
+                {
+                    Subscribe(nameof(OnPlayerInit));
+                }
+
                 Subscribe(nameof(CanBradleyApcTarget));
                 Subscribe(nameof(OnNpcTarget));
                 Subscribe(nameof(OnEntityTakeDamage));
@@ -2990,7 +2988,7 @@ namespace Oxide.Plugins
         static bool showOpenedMsg;
         static List<string> randomNames = new List<string>();
         bool unlockWhenNpcsDie;
-        bool requireAllNpcsDie;
+        static bool requireAllNpcsDie;
 
         List<object> DefaultTimesInSeconds
         {
