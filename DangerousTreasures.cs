@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using Facepunch;
 using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Core.Configuration;
@@ -9,35 +8,93 @@ using Oxide.Core.Plugins;
 using Rust;
 using UnityEngine;
 using System.Reflection;
+using UnityEngine.AI;
+using UnityEngine.SceneManagement;
+using System.Text;
 
-/* 
-    TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
-    TODO: Item rarity
-
-    Fix for events spawning in rocks
-    Fix for npcs spawning in rocks
-    Fix for fire aura not activating on players
-    Fix for Npcs not returning to event zone when too far away and out of combat
-    Added another check to prevent event from starting when max events is reached
-    New method for retrieving workship skins as the former is no longer available
-    Npcs and animals will no longer chase each other, except against IHTNAgent Npcs
-    Npcs will now start roaming immediately upon spawn, giving players the challenge upfront
-    Npcs are now immune to all damage by non-players, including but not limited to fire and explosions
-    Improved Npcs movement
-    Removed Npcs warping back to chest position
-    Various code bits made standard
+/*
+    ***Removed all raidable bases functionality. Use Raidable Bases plugin, and enable Expansion Mode in that config.***
+    
+    2.0.0:
+    Please save/delete your config file! Config was rewritten
+    Fixed all known issues except npcs running around like chickens with their heads cut off. Whats new. Rip
+    Added API_SetContainer(StorageContainer container, float radius, bool spawnNpcs)
+    Added several config options:
+        `Use Vending Map Marker` (true)
+        `Use Explosion Map Marker` (false)
+        `Marker Event Name` (Dangerous Treasures Event)
+        `Health For Murderers (100 min, 5000 max)` (150.0)
+        `Health For Scientists (100 min, 5000 max)` (150.0)
+        `Murderer Sprinting Speed (0 min, 25 max)` (2.5)
+        `Murderer Walking Speed (0 min, 25 max)` (1.5)
+        `Scientist Sprinting Speed (0 min, 25 max)` (1.0)
+        `Scientist Walking Speed (0 min, 25 max)` (0.0)
+        `Murderer Items`
+        `Scientist Items`
+        `Murderer Kits`
+        `Scientist Kits`
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.4.0")]
+    [Info("Dangerous Treasures", "nivex", "2.0.0")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
-        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager;
+        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits;
         public static readonly FieldInfo AllScientists = typeof(Scientist).GetField("AllScientists", (BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.NonPublic));
 
-        bool debug = false;
+        void OnPluginLoaded(Plugin plugin)
+        {
+            if (plugin.Title == "LustyMap")
+                LustyMap = plugin;
+            else if (plugin.Title == "ZoneManager")
+                ZoneManager = plugin;
+            else if (plugin.Title == "Economics")
+                Economics = plugin;
+            else if (plugin.Title == "ServerRewards")
+                ServerRewards = plugin;
+            else if (plugin.Title == "Map")
+                Map = plugin;
+            else if (plugin.Title == "GUIAnnouncements")
+                GUIAnnouncements = plugin;
+            else if (plugin.Title == "MarkerManager")
+                MarkerManager = plugin;
+            else if (plugin.Title == "CopyPaste")
+                CopyPaste = plugin;
+            else if (plugin.Title == "Kits")
+                Kits = plugin;
+        }
+
+        void OnPluginUnloaded(Plugin plugin)
+        {
+            if (plugin.Title == "LustyMap")
+                LustyMap = null;
+            else if (plugin.Title == "ZoneManager")
+                ZoneManager = null;
+            else if (plugin.Title == "Economics")
+                Economics = null;
+            else if (plugin.Title == "ServerRewards")
+                ServerRewards = null;
+            else if (plugin.Title == "Map")
+                Map = null;
+            else if (plugin.Title == "GUIAnnouncements")
+                GUIAnnouncements = null;
+            else if (plugin.Title == "MarkerManager")
+                MarkerManager = null;
+            else if (plugin.Title == "CopyPaste")
+                CopyPaste = null;
+            else if (plugin.Title == "Kits")
+                Kits = null;
+        }
+
+        static bool useRockets;
+        static bool useRandomSkins;
+        static bool useSpheres;
+        static bool useMissileLauncher;
+        static bool useFireballs;
+        const bool True = true;
+        const bool False = false;
         static DangerousTreasures ins;
         static bool unloading = false;
         bool init = false;
@@ -53,28 +110,41 @@ namespace Oxide.Plugins
         const string fireballPrefab = "assets/bundled/prefabs/oilfireballsmall.prefab";
         static string rocketResourcePath;
         DynamicConfigFile dataFile;
-        StoredData storedData = new StoredData();
+        static StoredData storedData = new StoredData();
         Vector3 sd_customPos;
+        Timer eventTimer;
 
-        int worldLayer = LayerMask.GetMask("World");
+        static int treeLayer = LayerMask.GetMask("Tree");
+        static int worldLayer = LayerMask.GetMask("World");
+        static int waterLayer = LayerMask.GetMask("Water");
+        int deployableLayer = LayerMask.GetMask("Deployed");
         static int playerLayer = LayerMask.GetMask("Player (Server)");
-        int obstructionLayer = LayerMask.GetMask(new[] { "Player (Server)", "Construction", "Deployed", "Clutter" });
-        static int heightLayer = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed", "Clutter" });
+        int obstructionLayer = LayerMask.GetMask("Player (Server)", "Construction", "Deployed", "Clutter");
+        static int heightLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed", "Clutter");
         List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
+        //int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed");
+        int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default"); //already checked
 
-        static List<MonumentInfo> monuments = new List<MonumentInfo>(); // positions of monuments on the server
+        static Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
+        static Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();  // positions of monuments on the server
+
+        class MonInfo
+        {
+            public Vector3 Position;
+            public float Radius;
+        }
+
         static List<uint> newmanProtections = new List<uint>();
         List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
         List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
         Dictionary<Vector3, float> managedZones = new Dictionary<Vector3, float>();
-
+        static List<TreasureItem> chestLoot { get; set; } = new List<TreasureItem>();
         static Dictionary<uint, MapInfo> mapMarkers = new Dictionary<uint, MapInfo>();
         static Dictionary<uint, string> lustyMarkers = new Dictionary<uint, string>();
         Dictionary<string, List<ulong>> skinsCache = new Dictionary<string, List<ulong>>();
         Dictionary<string, List<ulong>> workshopskinsCache = new Dictionary<string, List<ulong>>();
         static Dictionary<uint, TreasureChest> treasureChests = new Dictionary<uint, TreasureChest>();
         static Dictionary<uint, string> looters = new Dictionary<uint, string>();
-        List<uint> storage = new List<uint>();
 
         class MapInfo
         {
@@ -83,15 +153,6 @@ namespace Oxide.Plugins
             public Vector3 Position;
 
             public MapInfo() { }
-        }
-
-        class TreasureItem
-        {
-            public object shortname { get; set; } = string.Empty;
-            public object amount { get; set; } = 0;
-            public object skin { get; set; } = 0uL;
-            public object amountMin { get; set; } = 0;
-            public TreasureItem() { }
         }
 
         class PlayerInfo
@@ -135,9 +196,9 @@ namespace Oxide.Plugins
                 projectile.InitializeVelocity(Vector3.up);
 
                 missile.explosionRadius = 0f;
-                missile.timerAmountMin = timeUntilExplode;
-                missile.timerAmountMax = timeUntilExplode;
-                
+                missile.timerAmountMin = _config.MissileLauncher.Lifetime;
+                missile.timerAmountMax = _config.MissileLauncher.Lifetime;
+
                 missile.damageTypes = new List<DamageTypeEntry>(); // no damage
             }
 
@@ -156,9 +217,9 @@ namespace Oxide.Plugins
                     if (!missile || missile.IsDestroyed)
                         return;
 
-                    var list = Pool.GetList<BasePlayer>();
-                    var entities = Pool.GetList<BaseEntity>();
-                    Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerLayer, QueryTriggerInteraction.Ignore);
+                    var list = new List<BasePlayer>();
+                    var entities = new List<BaseEntity>();
+                    Vis.Entities<BaseEntity>(launchPos, _config.Event.Radius + _config.MissileLauncher.Distance, entities, playerLayer, QueryTriggerInteraction.Ignore);
 
                     foreach (var entity in entities)
                     {
@@ -167,7 +228,7 @@ namespace Oxide.Plugins
                         if (!player || player is NPCPlayer || !player.CanInteract())
                             continue;
 
-                        if (ignoreFlying && player.IsFlying)
+                        if (_config.MissileLauncher.IgnoreFlying && player.IsFlying)
                             continue;
 
                         if (exclude.Contains(player.userID) || newmanProtections.Contains(player.net.ID))
@@ -176,20 +237,22 @@ namespace Oxide.Plugins
                         list.Add(player); // acquire a player target 
                     }
 
-                    Pool.FreeList<BaseEntity>(ref entities);
+                    entities.Clear();
+                    entities = null;
 
                     if (list.Count > 0)
                     {
                         target = list.GetRandom(); // pick a random player
-                        Pool.FreeList<BasePlayer>(ref list);
+                        list.Clear();
+                        list = null;
                     }
-                    else if (!targetChest)
+                    else if (!_config.MissileLauncher.TargetChest)
                     {
                         missile.Kill();
                         return;
                     }
 
-                    projectile.speed = rocketSpeed * rocketSpeedMulti;
+                    projectile.speed = _config.Rocket.Speed * rocketSpeedMulti;
                     InvokeRepeating(new Action(GuideMissile), 0.1f, 0.1f);
                 });
             }
@@ -243,7 +306,7 @@ namespace Oxide.Plugins
             }
         }
 
-        class TreasureChest : FacepunchBehaviour
+        public class TreasureChest : FacepunchBehaviour
         {
             public StorageContainer container;
             public bool started;
@@ -255,16 +318,13 @@ namespace Oxide.Plugins
             float posMulti = 3f;
             float sphereMulti = 2f;
             float claimTime;
-            float lastTick;
             Vector3 lastFirePos;
             bool firstEntered;
             bool markerCreated;
+            string zoneName;
 
-            VendingMachineMapMarker vendingMarker;
-            MapMarkerGenericRadius genericMarker;
             Dictionary<ulong, float> fireticks = new Dictionary<ulong, float>();
             List<FireBall> fireballs = new List<FireBall>();
-            List<ulong> players = new List<ulong>();
             List<ulong> newmans = new List<ulong>();
             List<ulong> traitors = new List<ulong>();
             List<uint> protects = new List<uint>();
@@ -275,34 +335,250 @@ namespace Oxide.Plugins
             List<Vector3> firePositions = new List<Vector3>();
             Timer destruct, unlock, countdown, announcement;
             public List<NPCPlayerApex> npcs = new List<NPCPlayerApex>();
-            List<Vector3> spawnpoints;
+            MapMarkerExplosion mapMarker;
+            MapMarkerGenericRadius genericMarker;
+            VendingMachineMapMarker vendingMarker;
+            int npcSpawnedAmount;
+            bool killed = False;
+            float _radius;
+            Dictionary<string, List<string>> npcKits = new Dictionary<string, List<string>>();
+
+            public float Radius
+            {
+                get
+                {
+                    return _radius;
+                }
+                set
+                {
+                    _radius = value;
+                    Awaken();
+                }
+            }
+
+            class NewmanTracker : FacepunchBehaviour
+            {
+                BasePlayer player;
+                TreasureChest chest;
+
+                void Awake()
+                {
+                    player = GetComponent<BasePlayer>();
+                }
+
+                public void Assign(TreasureChest chest)
+                {
+                    this.chest = chest;
+                    InvokeRepeating(Track, 1f, 0.1f);
+                }
+
+                void Track()
+                {
+                    if (!chest || !player || !player.IsConnected || (player.transform.position - chest.containerPos).magnitude > chest.Radius)
+                    {
+                        Destroy(this);
+                        return;
+                    }
+
+                    if (_config.NewmanMode.Aura || _config.NewmanMode.Harm)
+                    {
+                        int count = player.inventory.AllItems().Where(item => item.info.shortname != "torch" && item.info.shortname != "rock" && player.IsHostileItem(item))?.Count() ?? 0;
+
+                        if (count == 0)
+                        {
+                            if (_config.NewmanMode.Aura && !chest.newmans.Contains(player.userID) && !chest.traitors.Contains(player.userID))
+                            {
+                                player.ChatMessage(ins.msg("Newman Enter", player.UserIDString));
+                                chest.newmans.Add(player.userID);
+                            }
+
+                            if (_config.NewmanMode.Harm && !newmanProtections.Contains(player.net.ID) && !chest.protects.Contains(player.net.ID) && !chest.traitors.Contains(player.userID))
+                            {
+                                player.ChatMessage(ins.msg("Newman Protect", player.UserIDString));
+                                newmanProtections.Add(player.net.ID);
+                                chest.protects.Add(player.net.ID);
+                            }
+
+                            if (!chest.traitors.Contains(player.userID))
+                            {
+                                return;
+                            }
+                        }
+
+                        if (chest.newmans.Contains(player.userID))
+                        {
+                            player.ChatMessage(ins.msg(useFireballs ? "Newman Traitor Burn" : "Newman Traitor", player.UserIDString));
+                            chest.newmans.Remove(player.userID);
+
+                            if (!chest.traitors.Contains(player.userID))
+                                chest.traitors.Add(player.userID);
+
+                            if (newmanProtections.Contains(player.net.ID))
+                                newmanProtections.Remove(player.net.ID);
+
+                            if (chest.protects.Contains(player.net.ID))
+                                chest.protects.Remove(player.net.ID);
+                        }
+                    }
+
+                    if (!useFireballs)
+                        return;
+
+                    var stamp = Time.realtimeSinceStartup;
+
+                    if (!chest.fireticks.ContainsKey(player.userID))
+                        chest.fireticks[player.userID] = stamp + _config.Fireballs.SecondsBeforeTick;
+
+                    if (chest.fireticks[player.userID] - stamp <= 0)
+                    {
+                        chest.fireticks[player.userID] = stamp + _config.Fireballs.SecondsBeforeTick;
+                        chest.SpawnFire(player.transform.position);
+                    }
+                }
+
+                void OnDestroy()
+                {
+                    CancelInvoke(Track);
+                }
+            }
+
+            void Free()
+            {
+                fireticks.Clear();
+                fireticks = null;
+                fireballs.Clear();
+                fireballs = null;
+                newmans.Clear();
+                newmans = null;
+                traitors.Clear();
+                traitors = null;
+                protects.Clear();
+                protects = null;
+                missiles.Clear();
+                missiles = null;
+                times.Clear();
+                times = null;
+                spheres.Clear();
+                spheres = null;
+                missilePositions.Clear();
+                missilePositions = null;
+                firePositions.Clear();
+                firePositions = null;
+                npcs.Clear();
+                npcs = null;
+                npcKits.Clear();
+                npcKits = null;
+
+                if (destruct != null)
+                {
+                    destruct.Destroy();
+                }
+
+                if (unlock != null)
+                {
+                    unlock.Destroy();
+                }
+
+                if (countdown != null)
+                {
+                    countdown.Destroy();
+                }
+
+                if (announcement != null)
+                {
+                    announcement.Destroy();
+                }
+            }
+
+            bool IsNpcStalled(NPCPlayerApex npc)
+            {
+                if (npc.IsValid() && npc.lastDealtDamageTime <= 0)
+                {
+                    return True;
+                }
+
+                return False;
+            }
+
+            public void Kill()
+            {
+                if (killed) return;
+
+                RemoveMapMarkers();
+                KillNpc();
+                CancelInvoke();
+                DestroyLauncher();
+                DestroySphere();
+                DestroyFire();
+                killed = true;
+            }
 
             public bool HasRustMarker
             {
                 get
                 {
-                    return vendingMarker != null && genericMarker != null;
+                    return mapMarker != null || vendingMarker != null;
                 }
             }
 
+            public static bool HasNPC(NPCPlayerApex player)
+            {
+                return player != null && HasNPC(player.userID);
+            }
+            
             public static bool HasNPC(ulong userID)
             {
                 foreach (var x in treasureChests.Values)
                 {
-                    if (x.hasNPC(userID))
+                    foreach (var npc in x.npcs)
                     {
-                        return true;
+                        if (npc.userID == userID)
+                        {
+                            return True;
+                        }
                     }
                 }
 
-                return false;
+                return False;
+            }
+
+            public static bool IsTooFar(ulong userID)
+            {
+                foreach (var x in treasureChests.Values)
+                {
+                    foreach (var npc in x.npcs)
+                    {
+                        if (npc.userID == userID)
+                        {
+                            return (x.containerPos - npc.transform.position).magnitude > x.Radius * 1.5f;
+                        }
+                    }
+                }
+
+                return False;
             }
 
             public static TreasureChest GetNPC(ulong userID)
             {
                 foreach (var x in treasureChests.Values)
                 {
-                    if (x.hasNPC(userID))
+                    foreach (var npc in x.npcs)
+                    {
+                        if (npc.userID == userID)
+                        {
+                            return x;
+                        }
+                    }
+                }
+
+                return null;
+            }
+
+            public static TreasureChest Get(Vector3 target, float f = 15f)
+            {
+                foreach (var x in treasureChests.Values)
+                {
+                    if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius + f)
                     {
                         return x;
                     }
@@ -311,95 +587,39 @@ namespace Oxide.Plugins
                 return null;
             }
 
-            public static bool HasNPC(ulong userID, ulong userID2)
+            public static bool HasNPC(ulong userID1, ulong userID2)
             {
-                foreach (var x in treasureChests.Values)
+                bool flag1 = False;
+                bool flag2 = False;
+
+                foreach (var chest in treasureChests.Values)
                 {
-                    if (x.hasNPC(userID) && x.hasNPC(userID2))
+                    foreach (var npc in chest.npcs)
                     {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-
-            private bool hasNPC(ulong userID)
-            {
-                foreach(var x in npcs)
-                {
-                    if (x.userID == userID)
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-
-            public Vector3 GetSpawn()
-            {
-                foreach(var x in monuments)
-                {
-                    if (Vector3.Distance(x.transform.position, containerPos) < 50f)
-                    {
-                        return containerPos;
-                    }
-                }
-
-                if (spawnpoints == null || spawnpoints.Count == 0)
-                {
-                    spawnpoints = new List<Vector3>();
-
-                    foreach(var e in BaseNetworkable.serverEntities)
-                    {
-                        if (e != null && e.transform != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f && IsValidSpawn(e))
+                        if (npc.userID == userID1)
                         {
-                            spawnpoints.Add(new Vector3(e.transform.position.x, e.transform.position.y + 0.25f, e.transform.position.z));
+                            flag1 = True;
+                        }
+                        else if (npc.userID == userID2)
+                        {
+                            flag2 = True;
                         }
                     }
                 }
 
-                if (!undergroundLoot)
-                {
-                    spawnpoints.RemoveAll(e => e.y < containerPos.y);
-                }
-
-                var narrowed = new List<Vector3>();
-
-                foreach (var sp in spawnpoints)
-                {
-                    if (Vector3.Distance(sp, containerPos) < 15f)
-                    {
-                        narrowed.Add(sp);
-                    }
-                }
-
-                if (narrowed.Count > 0) // && narrowed.Count >= spawnNpcsAmount)
-                {
-                    return narrowed.GetRandom();
-                }
-
-                return spawnpoints.Count > 0 ? spawnpoints.GetRandom() : containerPos;
+                return flag1 && flag2;
             }
 
-            void Awake()
+            public void Awaken()
             {
-                container = GetComponent<StorageContainer>();
-                containerPos = container.transform.position;
-                uid = container.net.ID;
-                lastTick = Time.time;
-                
-                gameObject.layer = (int)Layer.Reserved1;
                 var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
-                collider.center = Vector3.zero;
-                collider.radius = eventRadius;
-                collider.isTrigger = true;
-                collider.enabled = true;
 
-                if (useSpheres && amountOfSpheres > 0)
+                collider.isTrigger = true;
+                collider.radius = Radius;
+
+                if (_config.Event.Spheres && _config.Event.SphereAmount > 0)
                 {
-                    for (int i = 0; i < amountOfSpheres; i++)
+                    for (int i = 0; i < _config.Event.SphereAmount; i++)
                     {
                         var sphere = GameManager.server.CreateEntity(spherePrefab, containerPos, new Quaternion(), true) as SphereEntity;
 
@@ -407,21 +627,21 @@ namespace Oxide.Plugins
                         {
                             sphere.currentRadius = 1f;
                             sphere.Spawn();
-                            sphere.LerpRadiusTo(eventRadius * sphereMulti, 5f);
+                            sphere.LerpRadiusTo(Radius * sphereMulti, 5f);
                             spheres.Add(sphere);
                         }
                         else
                         {
-                            ins.Puts(ins.rf(szInvalidConstant, null, spherePrefab));
+                            ins.Puts(_("Invalid Constant", null, spherePrefab));
                             useSpheres = false;
                             break;
                         }
                     }
                 }
 
-                if (useRocketOpener)
+                if (useRockets)
                 {
-                    var positions = GetRandomPositions(containerPos, eventRadius * posMulti, numRockets, 0f);
+                    var positions = GetRandomPositions(containerPos, Radius * posMulti, _config.Rocket.Amount, 0f);
 
                     foreach (var position in positions)
                     {
@@ -437,24 +657,116 @@ namespace Oxide.Plugins
 
                 if (useFireballs)
                 {
-                    firePositions = GetRandomPositions(containerPos, eventRadius, 25, containerPos.y + 25f);
+                    firePositions = GetRandomPositions(containerPos, Radius, 25, containerPos.y + 25f);
 
                     if (firePositions.Count > 0)
-                        InvokeRepeating(new Action(SpawnFire), 0.1f, secondsBeforeTick);
+                        InvokeRepeating(new Action(SpawnFire), 0.1f, _config.Fireballs.SecondsBeforeTick);
                 }
 
-                if (launchMissiles)
+                if (useMissileLauncher)
                 {
-                    missilePositions = GetRandomPositions(containerPos, eventRadius, 25, 1);
+                    missilePositions = GetRandomPositions(containerPos, Radius, 25, 1);
 
                     if (missilePositions.Count > 0)
                     {
-                        InvokeRepeating(new Action(LaunchMissile), 0.1f, missileFrequency);
+                        InvokeRepeating(new Action(LaunchMissile), 0.1f, _config.MissileLauncher.Frequency);
                         LaunchMissile();
                     }
                 }
 
-                UpdateMarker();
+                InvokeRepeating(UpdateMarker, 5f, 30f);
+            }
+
+            void Awake()
+            {
+                gameObject.layer = (int)Layer.Reserved1;
+                container = GetComponent<StorageContainer>();
+                container.OwnerID = 0;
+                containerPos = container.transform.position;
+                uid = container.net.ID;
+                container.inventory.SetFlag(ItemContainer.Flag.NoItemInput, true);
+                SetupNpcKits();
+            }
+
+            public static void SetLoot(StorageContainer container, List<TreasureItem> treasure)
+            {
+                if (container == null || container.IsDestroyed || treasure == null || treasure.Count == 0)
+                {
+                    return;
+                }
+
+                var loot = treasure.ToList();
+
+                container.inventory.Clear();
+                container.inventory.capacity = Math.Min(_config.Event.TreasureAmount, loot.Count);
+
+                for (int j = 0; j < container.inventory.capacity; j++)
+                {
+                    if (loot.Count == 0)
+                    {
+                        break;
+                    }
+
+                    var lootItem = loot.GetRandom();
+                    var itemDef = ItemManager.FindItemDefinition(lootItem.shortname);
+
+                    loot.Remove(lootItem);
+
+                    if (itemDef == null)
+                    {
+                        ins.PrintError("Invalid shortname in config: {0}", lootItem.shortname);
+                        continue;
+                    }
+
+                    int amount = Math.Max(Convert.ToInt32(lootItem.amount), 1);
+                    int amountMin = Convert.ToInt32(lootItem.amountMin);
+
+                    if (amountMin > 0 && amountMin < amount)
+                    {
+                        amount = UnityEngine.Random.Range(amountMin, amount);
+                    }
+
+                    if (itemDef.stackable == 1 || (itemDef.condition.enabled && itemDef.condition.max > 0f))
+                        amount = 1;
+
+                    ulong skin = lootItem.skin;
+                    Item item = ItemManager.CreateByName(itemDef.shortname, amount, skin);
+
+                    if (item == null)
+                    {
+                        ins.PrintError("Invalid item in config, shortname: {0}, amount: {1}, min: {2}, skin: {3}", lootItem.shortname, lootItem.amount, lootItem.amountMin, lootItem.skin);
+                        continue;
+                    }
+
+                    if (item.info.stackable > 1 && !item.hasCondition)
+                    {
+                        item.amount = GetPercentIncreasedAmount(amount);
+                    }
+
+                    if (_config.Treasure.RandomSkins && skin == 0)
+                    {
+                        var skins = ins.GetItemSkins(item.info);
+
+                        if (skins.Count > 0)
+                        {
+                            skin = skins.GetRandom();
+                            item.skin = skin;
+                        }
+                    }
+
+                    if (skin != 0 && item.GetHeldEntity())
+                        item.GetHeldEntity().skinID = skin;
+
+                    item.MarkDirty();
+
+                    if (!item.MoveToContainer(container.inventory, -1, true))
+                    {
+                        item.Remove(0.1f);
+                    }
+                }
+
+                loot.Clear();
+                loot = null;
             }
 
             void OnTriggerEnter(Collider col)
@@ -462,250 +774,346 @@ namespace Oxide.Plugins
                 if (started)
                     return;
 
-                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
+                var player = col.ToBaseEntity() as BasePlayer;
 
-                if (!player || player is NPCPlayerApex || players.Contains(player.userID))
+                if (!player || player.IsNpc)
                     return;
 
-                if (showFirstEntered && !firstEntered)
+                if (_config.EventMessages.FirstEntered && !firstEntered)
                 {
                     firstEntered = true;
                     ins.PrintToChat(ins.msg("OnFirstPlayerEntered", null, player.displayName, FormatGridReference(containerPos)));
                 }
 
-                Message(player, ins.msg(useFireballs ? szProtected : szUnprotected, player.UserIDString));
-                players.Add(player.userID);
+                Message(player, ins.msg(useFireballs ? "Dangerous Zone Protected" : "Dangerous Zone Unprotected", player.UserIDString));
+
+                if (!player.gameObject.GetComponent<NewmanTracker>())
+                {
+                    var tracker = player.gameObject.AddComponent<NewmanTracker>();
+
+                    tracker.Assign(this);
+                }
             }
 
             void OnTriggerExit(Collider col)
             {
-                if (!newmanProtect)
+                if (!_config.NewmanMode.Harm)
                     return;
 
-                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
+                var player = col.ToBaseEntity() as BasePlayer;
 
-                if (!player || player is NPCPlayerApex)
+                if (!player)
                     return;
+
+                if (player.IsNpc && npcs.Contains(player))
+                {
+                    var apex = player as NPCPlayerApex;
+
+                    if (apex.GetNavAgent == null || !apex.GetNavAgent.isOnNavMesh)
+                        apex.finalDestination = containerPos;
+                    else apex.GetNavAgent.SetDestination(containerPos);
+
+                    apex.Destination = containerPos;
+                }
 
                 if (protects.Contains(player.net.ID))
                 {
                     newmanProtections.Remove(player.net.ID);
                     protects.Remove(player.net.ID);
-                    Message(player, ins.msg(szNewmanProtectFade, player.UserIDString));
-                }
-            }
-
-            void OnTriggerStay(Collider col)
-            {
-                if (!useFireballs && !newmanMode && !newmanProtect)
-                    return;
-
-                if (started || Time.time - lastTick < 0.1f)
-                    return;
-
-                lastTick = Time.time;
-
-                var player = col.GetComponent<BasePlayer>() ?? col.GetComponentInParent<BasePlayer>();
-
-                if (!player || player is NPCPlayerApex)
-                    return;
-
-                if (newmanMode || newmanProtect)
-                {
-                    int count = 0;
-
-                    foreach(Item item in player.inventory.AllItems())
-                    {
-                        if (item.info.shortname != "torch" && item.info.shortname != "rock" && player.IsHostileItem(item))
-                        {
-                            count++;
-                        }
-                    }
-
-                    if (count == 0)
-                    {
-                        if (newmanMode && !newmans.Contains(player.userID) && !traitors.Contains(player.userID))
-                        {
-                            Message(player, ins.msg(szNewmanEnter, player.UserIDString));
-                            newmans.Add(player.userID);
-                        }
-
-                        if (newmanProtect && !newmanProtections.Contains(player.net.ID) && !protects.Contains(player.net.ID) && !traitors.Contains(player.userID))
-                        {
-                            Message(player, ins.msg(szNewmanProtect, player.UserIDString));
-                            newmanProtections.Add(player.net.ID);
-                            protects.Add(player.net.ID);
-                        }
-
-                        if (!traitors.Contains(player.userID))
-                            return;
-                    }
-
-                    if (newmans.Contains(player.userID))
-                    {
-                        Message(player, ins.msg(useFireballs ? szNewmanTraitorBurn : szNewmanTraitor, player.UserIDString));
-                        newmans.Remove(player.userID);
-
-                        if (!traitors.Contains(player.userID))
-                            traitors.Add(player.userID);
-
-                        newmanProtections.Remove(player.net.ID);
-                        protects.Remove(player.net.ID);
-                    }
+                    Message(player, ins.msg("Newman Protect Fade", player.UserIDString));
                 }
 
-                if (!useFireballs)
-                    return;
-
-                float stamp = Time.realtimeSinceStartup;
-
-                if (!fireticks.ContainsKey(player.userID))
-                    fireticks[player.userID] = stamp + secondsBeforeTick;
-
-                if (fireticks[player.userID] - stamp <= 0)
-                {
-                    fireticks[player.userID] = stamp + secondsBeforeTick;
-                    SpawnFire(player.transform.position);
-                }
+                newmans.Remove(player.userID);
             }
 
             public void SpawnNpcs()
             {
-                if (spawnNpcsAmount < 1 || !spawnNpcs)
+                if (_config.NPC.SpawnAmount < 1 || !_config.NPC.Enabled)
                     return;
 
                 var rot = new Quaternion(1f, 0f, 0f, 1f);
-                int amount = spawnNpcsRandomAmount && spawnNpcsAmount > 1 ? UnityEngine.Random.Range(spawnNpcsMinAmount, spawnNpcsAmount) : spawnNpcsAmount;
-
+                int amount = _config.NPC.SpawnRandomAmount && _config.NPC.SpawnAmount > 1 ? UnityEngine.Random.Range(_config.NPC.SpawnMinAmount, _config.NPC.SpawnAmount) : _config.NPC.SpawnAmount;
+                
                 for (int i = 0; i < amount; i++)
                 {
-                    var spawnpoint = GetSpawn();
-                    var npc = SpawnNPC(spawnpoint, rot, spawnScientistsOnly ? false : spawnNpcsBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : spawnNpcsMurderers);
+                    var npc = SpawnNPC(rot, _config.NPC.SpawnScientistsOnly ? false : _config.NPC.SpawnBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : _config.NPC.SpawnMurderers);
 
                     if (npc == null)
                     {
-                        break;
+                        continue;
                     }
 
                     npcs.Add(npc);
                 }
+
+                npcSpawnedAmount = npcs.Count;
             }
 
-            private Vector3 GetRandomPoint
+            Vector3 FindPointOnNavmesh()
+            {
+                int tries = 0;
+                NavMeshHit navHit;
+
+                while (++tries < 100)
+                {
+                    var r = containerPos + (UnityEngine.Random.insideUnitSphere * (Radius - 2.5f));
+
+                    if (NavMesh.SamplePosition(r, out navHit, Radius, NavMesh.AllAreas))
+                    {
+                        if (ins.IsInOrOnRock(navHit.position, "rock_"))
+                        {
+                            continue;
+                        }
+                        if (navHit.position.y < TerrainMeta.HeightMap.GetHeight(navHit.position) + 1f)
+                        {
+                            return navHit.position;
+                        }
+                    }
+                }
+
+                return Vector3.zero;
+            }
+            
+            void ResetNpc(NPCPlayerApex apex)
+            {
+                var position = FindPointOnNavmesh();
+
+                if (position == Vector3.zero)
+                {
+                    return;
+                }
+
+                apex.ServerPosition = position;
+                apex.GetNavAgent.Warp(position);
+            }
+
+            NPCPlayerApex InstantiateEntity(Vector3 position, bool murd)
+            {
+                bool pk = true;
+                var name = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : pk ? "assets/prefabs/npc/scientist/scientistpeacekeeper.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
+                var prefab = GameManager.server.FindPrefab(name);
+                var gameObject = Facepunch.Instantiate.GameObject(prefab, position, default(Quaternion));
+
+                gameObject.name = name;
+                SceneManager.MoveGameObjectToScene(gameObject, Rust.Server.EntityScene);
+
+                if (gameObject.GetComponent<Spawnable>())
+                {
+                    Destroy(gameObject.GetComponent<Spawnable>());
+                }
+
+                if (!gameObject.activeSelf)
+                {
+                    gameObject.SetActive(true);
+                }
+
+                return gameObject.GetComponent<NPCPlayerApex>();
+            }
+
+            Vector3 GetRandomPoint
             {
                 get
                 {
-                    return containerPos + UnityEngine.Random.insideUnitSphere * eventRadius / 2;
+                    return containerPos + UnityEngine.Random.insideUnitSphere * (Radius * 0.5f);
                 }
             }
 
-            NPCPlayerApex SpawnNPC(Vector3 pos, Quaternion rot, bool murd)
+            NPCPlayerApex SpawnNPC(Quaternion rot, bool murd)
             {
-                string prefabname = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
-                var apex = GameManager.server.CreateEntity(prefabname, pos, rot, false) as NPCPlayerApex;
+                var spawnPoint = FindPointOnNavmesh();
+
+                if (spawnPoint == Vector3.zero)
+                    return null;
+
+                var apex = InstantiateEntity(spawnPoint, murd);
 
                 if (apex == null)
                     return null;
 
-                if (!murd && AllScientists != null) // this fix also prevents HasAllyInLineOfFire from working which requires OnNpcTarget
-                    AllScientists.SetValue(apex as Scientist, new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #2
-
                 apex.Spawn();
-                apex.Hurt(1f);
-                apex.Heal(1f);
+                apex.CancelInvoke(apex.EquipTest);
+                apex.CancelInvoke(apex.RadioChatter);
+
+                //if (!murd && AllScientists != null) // this fix also prevents HasAllyInLineOfFire from working which requires OnNpcTarget
+                    //AllScientists.SetValue(apex as Scientist, new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #2
+
+                apex.startHealth = murd ? _config.NPC.MurdererHealth : _config.NPC.ScientistHealth;
+                apex.InitializeHealth(apex.startHealth, apex.startHealth);
                 apex.CommunicationRadius = 0;
-                apex.GetComponent<FacepunchBehaviour>().CancelInvoke(new Action(apex.RadioChatter)); // overridden when coroutine called?
                 apex.RadioEffect = new GameObjectRef();
-                apex.gameObject.SetActive(true);
-                apex.Stats.MaxRoamRange = eventRadius * 0.85f;
-                apex.displayName = randomNames.Count > 0 ? randomNames.GetRandom() : Get(apex.userID);
+                apex.displayName = _config.NPC.RandomNames.Count > 0 ? _config.NPC.RandomNames.GetRandom() : DangerousTreasures.Get(apex.userID);
+                if (!murd) apex.GetComponent<Scientist>().LootPanelName = apex.displayName;
 
-                var randomPoint = GetRandomPoint;
-                apex.finalDestination = randomPoint;
-                apex.Destination = randomPoint;
-                apex.IsStopped = false;
-                apex.SetFact(NPCPlayerApex.Facts.Speed, (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
+                Invoke(new Action(() => EquipNpc(apex, murd)), 0.1f);
 
-                if (murd && murdererItems.Count > 0)
+                apex.Invoke(new Action(() =>
                 {
-                    foreach (string name in murdererItems)
+                    var heldEntity = apex.GetHeldEntity();
+
+                    if (heldEntity != null)
                     {
-                        Item item = ItemManager.CreateByName(name, 1, 0);
-
-                        if (item == null)
-                        {
-                            continue;
-                        }
-
-                        var skins = ins.GetItemSkins(item.info);
-
-                        if (skins.Count > 0)
-                        {
-                            ulong skin = skins.GetRandom();
-                            item.skin = skin;
-                        }
-
-                        item.MarkDirty();
-
-                        if (!item.MoveToContainer(apex.inventory.containerWear, -1, false))
-                        {
-                            item.Remove(0f);
-                        }
+                        heldEntity.SetHeld(true);
                     }
+
+                    apex.EquipWeapon();
+                }), 2f);
+
+                if (_config.NPC.DespawnInventory)
+                {
+                    if (murd)
+                    {
+                        apex.GetComponent<NPCMurderer>().LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
+                    }
+                    else apex.GetComponent<Scientist>().LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
                 }
 
-                //apex.FindClosestCoverToUs();
-                ins.timer.Once(2f, () => UpdateDestination(apex, randomPoint));
+                apex.SpawnPosition = containerPos;
+                apex.Stats.MaxRoamRange = 75f;
+
+                Invoke(new Action(() => UpdateDestination(apex, containerPos, murd)), 0.25f);
                 return apex;
             }
 
-
-
-            void UpdateDestination(NPCPlayerApex apex, Vector3 pos)
+            void SetupNpcKits()
             {
-                if (apex == null || apex.IsDestroyed)
+                npcKits = new Dictionary<string, List<string>>();
+                npcKits.Add("murderer", new List<string>());
+                npcKits.Add("scientist", new List<string>());
+
+                foreach (var kit in _config.NPC.MurdererKits)
+                {
+                    if (!npcKits["murderer"].Contains(kit) && IsKit(kit))
+                    {
+                        npcKits["murderer"].Add(kit);
+                    }
+                }
+
+                foreach (var kit in _config.NPC.ScientistKits)
+                {
+                    if (!npcKits["scientist"].Contains(kit) && IsKit(kit))
+                    {
+                        npcKits["scientist"].Add(kit);
+                    }
+                }
+            }
+
+            bool IsKit(string kit)
+            {
+                return ins.Kits != null && ins.Kits.Call<bool>("isKit", kit);
+            }
+
+            void EquipNpc(NPCPlayerApex apex, bool murd)
+            {
+                List<string> kits;
+                if (npcKits.TryGetValue(murd ? "murderer" : "scientist", out kits) && kits.Count > 0)
+                {
+                    apex.inventory.Strip();
+
+                    object success = ins.Kits.Call("GiveKit", apex, kits.GetRandom());
+
+                    if (success is bool && (bool)success)
+                    {
+                        return;
+                    }
+                }
+
+                var items = murd ? _config.NPC.MurdererItems : _config.NPC.ScientistItems;
+
+                if (items.Count == 0)
+                {
                     return;
+                }
+
+                apex.inventory.Strip();
+
+                foreach (string shortname in items)
+                {
+                    var def = ItemManager.FindItemDefinition(shortname);
+
+                    if (def == null)
+                    {
+                        continue;
+                    }
+
+                    Item item = ItemManager.Create(def, 1, 0);
+                    var skins = ins.GetItemSkins(item.info);
+
+                    if (skins.Count > 0)
+                    {
+                        ulong skin = skins.GetRandom();
+                        item.skin = skin;
+                    }
+
+                    if (item.skin != 0 && item.GetHeldEntity())
+                    {
+                        item.GetHeldEntity().skinID = item.skin;
+                    }
+
+                    item.MarkDirty();
+
+                    if (!item.MoveToContainer(apex.inventory.containerWear, -1, False) && !item.MoveToContainer(apex.inventory.containerBelt, 0, False))
+                    {
+                        item.Remove(0f);
+                    }
+                }
+            }
+
+            void UpdateDestination(NPCPlayerApex apex, Vector3 pos, bool murd)
+            {
+                if (!apex.IsValid() || apex.IsDestroyed)
+                {
+                    return;
+                }
 
                 if (apex.GetFact(NPCPlayerApex.Facts.IsAggro) == 0 || apex.CombatTarget == null)
                 {
                     float distance = (apex.transform.position - pos).magnitude;
-                    bool tooFar = distance > eventRadius * 1.25f;
-                    
-                    if (tooFar || distance < eventRadius * 0.5f)
+                    bool tooFar = distance > Radius; // * 1.25f;
+
+                    if (distance > Radius)
                     {
-                        var randomPoint = GetRandomPoint;
+                        //pos = GetRandomPoint;
 
-                        apex.CurrentBehaviour = BaseNpc.Behaviour.Wander;
-                        apex.finalDestination = randomPoint;
-                        apex.Destination = randomPoint;
-                        apex.IsStopped = false;
+                        if (apex.GetNavAgent == null || !apex.GetNavAgent.isOnNavMesh)
+                            apex.finalDestination = pos;
+                        else apex.GetNavAgent.SetDestination(pos);
+
+                        apex.Destination = pos;
                         apex.SetFact(NPCPlayerApex.Facts.Speed, tooFar ? (byte)NPCPlayerApex.SpeedEnum.Run : (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
-
-                        pos = randomPoint;
                     }
-                }
 
-                if (apex.health > 5f)
-                {
-                    apex.Hurt(1f);
-                    apex.Heal(1f);
+                    apex.clothingMoveSpeedReduction = murd ? (tooFar ? -_config.NPC.MurdererSpeedSprinting : -_config.NPC.MurdererSpeedWalking) : (tooFar ? -_config.NPC.ScientistSpeedSprinting : -_config.NPC.ScientistSpeedWalking);
                 }
+                else apex.clothingMoveSpeedReduction = 0f;
 
-                ins.timer.Once(2f, () => UpdateDestination(apex, pos));
+                Invoke(new Action(() => UpdateDestination(apex, pos, murd)), 2f);
             }
 
             public void UpdateMarker()
             {
+                if (!_config.Event.MarkerVending && !_config.Event.MarkerExplosion)
+                {
+                    CancelInvoke(UpdateMarker);
+                }
+
+                if (genericMarker != null && !genericMarker.IsDestroyed)
+                {
+                    genericMarker.SendUpdate();
+                }
+
+                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                {
+                    vendingMarker.SendNetworkUpdate();
+                }
+
                 if (markerCreated)
                 {
-                    if (vendingMarker != null && !vendingMarker.IsDestroyed) vendingMarker.SendNetworkUpdate();
-                    if (genericMarker != null && !genericMarker.IsDestroyed) genericMarker.SendUpdate();
                     return;
                 }
 
                 if (ins.MarkerManager != null)
                 {
-                    Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.1f, "Dangerous Treasure Event", "FF0000", "00FFFFFF");
+                    Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.1f, _config.Event.MarkerName, "FF0000", "00FFFFFF");
                     markerCreated = true;
                     return;
                 }
@@ -714,35 +1122,33 @@ namespace Oxide.Plugins
 
                 foreach (var e in treasureChests.Values)
                 {
-                    if (e.HasRustMarker)
+                    if (e.HasRustMarker && ++markerCount > 10)
                     {
-                        markerCount++;
-
-                        if (markerCount > 10)
-                        {
-                            return;
-                        }
+                        return;
                     }
                 }
 
-                vendingMarker = GameManager.server.CreateEntity("assets/prefabs/deployable/vendingmachine/vending_mapmarker.prefab", containerPos) as VendingMachineMapMarker;
-
-                if (vendingMarker != null)
+                //explosionmarker cargomarker ch47marker cratemarker
+                if (_config.Event.MarkerExplosion)
                 {
-                    vendingMarker.enabled = false;
-                    vendingMarker.markerShopName = "Dangerous Treasures Event";
-                    vendingMarker.Spawn();
+                    mapMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/explosionmarker.prefab", containerPos, Quaternion.identity, true) as MapMarkerExplosion;
+
+                    if (mapMarker != null)
+                    {
+                        mapMarker.Spawn();
+                        mapMarker.SendMessage("SetDuration", 60, SendMessageOptions.DontRequireReceiver);
+                    }
                 }
-
-                genericMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/genericradiusmarker.prefab", containerPos) as MapMarkerGenericRadius;
-
-                if (genericMarker != null)
+                else if (_config.Event.MarkerVending)
                 {
-                    genericMarker.alpha = 1f;
-                    genericMarker.color1 = Color.red;
-                    genericMarker.radius = 0.1f;
-                    genericMarker.Spawn();
-                    genericMarker.SendUpdate();
+                    vendingMarker = GameManager.server.CreateEntity("assets/prefabs/deployable/vendingmachine/vending_mapmarker.prefab", containerPos) as VendingMachineMapMarker;
+
+                    if (vendingMarker != null)
+                    {
+                        vendingMarker.enabled = false;
+                        vendingMarker.markerShopName = _config.Event.MarkerName;
+                        vendingMarker.Spawn();
+                    }
                 }
 
                 markerCreated = true;
@@ -761,32 +1167,31 @@ namespace Oxide.Plugins
                 npcs.Clear();
             }
 
-            void OnDestroy()
+            public void RemoveMapMarkers()
             {
-                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                ins.RemoveLustyMarker(uid);
+                ins.RemoveMapMarker(uid);
+
+                if (mapMarker != null && !mapMarker.IsDestroyed)
                 {
-                    vendingMarker.Kill();
+                    mapMarker.CancelInvoke(mapMarker.DelayedDestroy);
+                    mapMarker.Kill(BaseNetworkable.DestroyMode.None);
                 }
 
                 if (genericMarker != null && !genericMarker.IsDestroyed)
                 {
                     genericMarker.Kill();
-                    genericMarker.SendUpdate();
                 }
 
-                ins.RemoveLustyMarker(uid);
-                ins.RemoveMapMarker(uid);
-                DestroyLauncher();
-                DestroySphere();
-                DestroyFire();
-                fireticks?.Clear();
-                players?.Clear();
-                times?.Clear();
-                unlock?.Destroy();
-                destruct?.Destroy();
-                countdown?.Destroy();
-                announcement?.Destroy();
-                KillNpc();
+                if (vendingMarker != null && !vendingMarker.IsDestroyed)
+                {
+                    vendingMarker.Kill();
+                }
+            }
+
+            void OnDestroy()
+            {
+                Kill();
 
                 if (treasureChests.ContainsKey(uid))
                 {
@@ -798,15 +1203,15 @@ namespace Oxide.Plugins
                     }
                 }
 
-                GameObject.Destroy(this);
+                Free();
             }
 
             public void LaunchMissile()
             {
                 if (string.IsNullOrEmpty(rocketResourcePath))
-                    launchMissiles = false;
+                    useMissileLauncher = false;
 
-                if (!launchMissiles)
+                if (!useMissileLauncher)
                 {
                     DestroyLauncher();
                     return;
@@ -824,7 +1229,8 @@ namespace Oxide.Plugins
 
                 if (!missile)
                 {
-                    launchMissiles = false;
+                    useMissileLauncher = false;
+                    DestroyLauncher();
                     return;
                 }
 
@@ -834,8 +1240,8 @@ namespace Oxide.Plugins
                 var gs = missile.gameObject.AddComponent<GuidanceSystem>();
 
                 gs.Exclude(newmans);
-                gs.SetTarget(container, targetChest);
-                gs.Launch(targettingTime);
+                gs.SetTarget(container, _config.MissileLauncher.TargetChest);
+                gs.Launch(_config.MissileLauncher.TargettingTime);
             }
 
             void SpawnFire()
@@ -843,7 +1249,7 @@ namespace Oxide.Plugins
                 var firePos = firePositions.GetRandom();
                 int retries = firePositions.Count;
 
-                while (Vector3.Distance(firePos, lastFirePos) < eventRadius * 0.35f && --retries > 0)
+                while (Vector3.Distance(firePos, lastFirePos) < Radius * 0.35f && --retries > 0)
                 {
                     firePos = firePositions.GetRandom();
                 }
@@ -873,7 +1279,7 @@ namespace Oxide.Plugins
 
                 if (fireball == null)
                 {
-                    ins.Puts(ins.rf(szInvalidConstant, null, fireballPrefab));
+                    ins.Puts(_("Invalid Constant", null, fireballPrefab));
                     useFireballs = false;
                     CancelInvoke(new Action(SpawnFire));
                     firePositions.Clear();
@@ -881,20 +1287,17 @@ namespace Oxide.Plugins
                 }
 
                 fireball.Spawn();
-                //fireball.enableSaving = false;
-                //BaseEntity.saveList.Remove(fireball);
-
-                fireball.damagePerSecond = fbDamagePerSecond;
-                fireball.generation = fbGeneration;
-                fireball.lifeTimeMax = fbLifeTimeMax;
-                fireball.lifeTimeMin = fbLifeTimeMin;
-                fireball.radius = fbRadius;
-                fireball.tickRate = fbTickRate;
-                fireball.waterToExtinguish = fbWaterToExtinguish;
+                fireball.damagePerSecond = _config.Fireballs.DamagePerSecond;
+                fireball.generation = _config.Fireballs.Generation;
+                fireball.lifeTimeMax = _config.Fireballs.LifeTimeMax;
+                fireball.lifeTimeMin = _config.Fireballs.LifeTimeMin;
+                fireball.radius = _config.Fireballs.Radius;
+                fireball.tickRate = _config.Fireballs.TickRate;
+                fireball.waterToExtinguish = _config.Fireballs.WaterToExtinguish;
                 fireball.SendNetworkUpdate();
                 fireball.Think();
 
-                float lifeTime = UnityEngine.Random.Range(fbLifeTimeMin, fbLifeTimeMax);
+                float lifeTime = UnityEngine.Random.Range(_config.Fireballs.LifeTimeMin, _config.Fireballs.LifeTimeMax);
                 ins.timer.Once(lifeTime, () => fireball?.Extinguish());
 
                 fireballs.Add(fireball);
@@ -902,17 +1305,13 @@ namespace Oxide.Plugins
 
             public void Destruct()
             {
-                if (showDestructMsg)
+                if (_config.EventMessages.Destruct)
                 {
                     var posStr = FormatGridReference(containerPos);
 
                     foreach (var target in BasePlayer.activePlayerList)
                         Message(target, ins.msg("OnChestDespawned", target.UserIDString, posStr));
                 }
-
-                unlock?.Destroy();
-                destruct?.Destroy();
-                announcement?.Destroy();
 
                 if (container != null && !container.IsDestroyed)
                 {
@@ -934,14 +1333,14 @@ namespace Oxide.Plugins
                 string eventPos = FormatGridReference(containerPos);
 
                 foreach (var target in BasePlayer.activePlayerList)
-                    Message(target, ins.msg(szDestroyingTreasure, target.UserIDString, eventPos, ins.FormatTime(time, target.UserIDString), szDistanceChatCommand));
+                    Message(target, ins.msg("pDestroyingTreasure", target.UserIDString, eventPos, ins.FormatTime(time, target.UserIDString), _config.Settings.DistanceChatCommand));
             }
 
             public string GetUnlockTime(string userID = null)
             {
                 return started ? null : ins.FormatTime(_unlockTime - Time.realtimeSinceStartup, userID);
             }
-            
+
             public void Unlock()
             {
                 if (unlock != null && !unlock.Destroyed)
@@ -955,25 +1354,37 @@ namespace Oxide.Plugins
                     DestroySphere();
                     DestroyLauncher();
 
-                    if (destructTime > 0f && destruct == null)
-                        destruct = ins.timer.Once(destructTime, () => Destruct());
+                    if (_config.Event.DestructTime > 0f && destruct == null)
+                        destruct = ins.timer.Once(_config.Event.DestructTime, () => Destruct());
 
-                    if (showStarted)
-                        ins.PrintToChat(ins.msg(requireAllNpcsDie ? "pStartedNpcs" : szEventStarted, null, FormatGridReference(containerPos)));
+                    if (_config.EventMessages.Started)
+                        ins.PrintToChat(ins.msg(_config.Unlock.RequireAllNpcsDie ? "pStartedNpcs" : "pStarted", null, FormatGridReference(containerPos)));
 
-                    if (useUnclaimedAnnouncements)
+                    if (_config.UnlootedAnnouncements.Enabled)
                     {
-                        claimTime = Time.realtimeSinceStartup + destructTime;
-                        announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
+                        claimTime = Time.realtimeSinceStartup + _config.Event.DestructTime;
+                        announcement = ins.timer.Repeat(_config.UnlootedAnnouncements.Interval * 60f, 0, () => Unclaimed());
                     }
 
                     started = true;
                 }
 
-                if (requireAllNpcsDie)
+                if (_config.Unlock.RequireAllNpcsDie)
                 {
-                    foreach (var npc in npcs)
+                    foreach (var npc in npcs.ToList())
                     {
+                        if (npc == null || npc.IsDestroyed)
+                        {
+                            npcs.Remove(npc);
+                            continue;
+                        }
+
+                        if (IsNpcStalled(npc))
+                        {
+                            npc.Die();
+                            continue;
+                        }
+
                         if (npc != null && npc.IsAlive())
                         {
                             ins.timer.Once(1f, () => Unlock());
@@ -982,11 +1393,8 @@ namespace Oxide.Plugins
                     }
                 }
 
-                if (container.HasFlag(BaseEntity.Flags.Locked))
-                    container.SetFlag(BaseEntity.Flags.Locked, false);
-
-                if (container.HasFlag(BaseEntity.Flags.OnFire))
-                    container.SetFlag(BaseEntity.Flags.OnFire, false);
+                container.SetFlag(BaseEntity.Flags.Locked, false);
+                container.SetFlag(BaseEntity.Flags.OnFire, false);
             }
 
             public void SetUnlockTime(float time)
@@ -998,11 +1406,11 @@ namespace Oxide.Plugins
                 {
                     Unlock();
                 });
-                
-                if (useCountdown && countdownTimes.Count > 0)
+
+                if (_config.Countdown.Enabled && _config.Countdown.Times?.Count > 0)
                 {
                     if (times.Count == 0)
-                        times.AddRange(countdownTimes);
+                        times.AddRange(_config.Countdown.Times);
 
                     countdown = ins.timer.Repeat(1f, 0, () =>
                     {
@@ -1019,7 +1427,7 @@ namespace Oxide.Plugins
                             string eventPos = FormatGridReference(containerPos);
 
                             foreach (var target in BasePlayer.activePlayerList)
-                                Message(target, ins.msg(szEventCountdown, target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
+                                Message(target, ins.msg("pCountdown", target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
 
                             times.Remove(countdownTime);
                         }
@@ -1093,11 +1501,17 @@ namespace Oxide.Plugins
             SubscribeHooks(false);
         }
 
+        //object OnNpcDestinationSet(NPCPlayerApex npc, Vector3 destination) => npc.IsValid() && npc.GetNavAgent.isOnNavMesh && TreasureChest.IsTooFar(npc.userID) ? (object)true : null;
+
         void OnServerInitialized()
         {
-            if (init)
+            if (!configLoaded)
+            {
+                Puts("Failed to load config; exiting OnServerInitialized hook");
                 return;
+            }
 
+            unloading = False;
             ins = this;
             dataFile = Interface.Oxide.DataFileSystem.GetFile(Name);
 
@@ -1110,19 +1524,10 @@ namespace Oxide.Plugins
             if (storedData?.Players == null)
                 storedData = new StoredData();
 
-            LoadVariables();
-
-            if (chestLoot.Count == 0)
-            {
-                Puts(rf(szUnloading, null, "Treasure"));
-                Interface.Oxide.UnloadPlugin(Name);
-                return;
-            }
-
-            if (automatedEvents)
+            if (_config.Event.Automated)
             {
                 if (storedData.SecondsUntilEvent != double.MinValue)
-                    if (storedData.SecondsUntilEvent - Time.realtimeSinceStartup > eventIntervalMax) // Allows users to lower max event time
+                    if (storedData.SecondsUntilEvent - Facepunch.Math.Epoch.Current > _config.Event.IntervalMax) // Allows users to lower max event time
                         storedData.SecondsUntilEvent = double.MinValue;
 
                 eventTimer = timer.Once(1f, () => CheckSecondsUntilEvent());
@@ -1145,21 +1550,32 @@ namespace Oxide.Plugins
                         {
                             storedData.Players[key].StolenChestsSeed = 0;
                         }
+
+                        sd_customPos = Vector3.zero;
+                        storedData.CustomPosition = "";
+                        wipeChestsSeed = false;
+                        SaveData();
                     }
                 }
-
-                sd_customPos = Vector3.zero;
-                storedData.CustomPosition = "";
-                wipeChestsSeed = false;
-                SaveData();
+                else
+                {
+                    sd_customPos = Vector3.zero;
+                    storedData.CustomPosition = "";
+                    wipeChestsSeed = false;
+                    SaveData();
+                }
             }
-
-            rocketDef = ItemManager.FindItemDefinition(useFireRockets ? fireRocketShortname : basicRocketShortname);
+            
+            useMissileLauncher = _config.MissileLauncher.Enabled;
+            useSpheres = _config.Event.Spheres;
+            useFireballs = _config.Fireballs.Enabled;
+            useRockets = _config.Rocket.Enabled;
+            rocketDef = ItemManager.FindItemDefinition(_config.Rocket.FireRockets ? fireRocketShortname : basicRocketShortname);
 
             if (!rocketDef)
             {
-                ins.Puts(ins.rf(szInvalidConstant, null, useFireRockets ? fireRocketShortname : basicRocketShortname));
-                useRocketOpener = false;
+                ins.Puts(_("Invalid Constant", null, _config.Rocket.FireRockets ? fireRocketShortname : basicRocketShortname));
+                useRockets = false;
             }
             else
                 rocketResourcePath = rocketDef.GetComponent<ItemModProjectile>().projectileObject.resourcePath;
@@ -1168,8 +1584,8 @@ namespace Oxide.Plugins
 
             if (!boxDef)
             {
-                Puts(rf(szInvalidConstant, null, boxShortname));
-                useRandomBoxSkin = false;
+                Puts(_("Invalid Constant", null, boxShortname));
+                useRandomSkins = false;
             }
 
             if (ZoneManager != null)
@@ -1204,7 +1620,7 @@ namespace Oxide.Plugins
 
                             if (distance > 0f)
                             {
-                                distance += eventRadius + 5f;
+                                distance += _config.Event.Radius + 5f;
                                 managedZones[position] = distance;
                             }
                         }
@@ -1215,32 +1631,49 @@ namespace Oxide.Plugins
                     Puts("Blocking events at zones: {0}", string.Join(", ", managedZones.Select(zone => string.Format("{0} ({1}: {2}m)", zone.Key.ToString().Replace("(", "").Replace(")", ""), FormatGridReference(zone.Key), zone.Value)).ToArray()));
             }
 
-            if (!undergroundLoot)
-                blacklistedMonuments.Add("Sewer");
-            
-            monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap).ToList());
-            if (monuments.Count > 0) allowedMonuments.AddRange(monuments);
+            monuments.Clear();
+            allowedMonuments.Clear();
 
-            foreach (var m in allowedMonuments.ToList())
+            string name = null;
+            foreach (var monument in UnityEngine.Object.FindObjectsOfType<MonumentInfo>())
             {
-                if (m.displayPhrase.english.Contains("Oil Rig") || blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
+                name = monument.displayPhrase.english;
+                if (monument.name.Contains("cave")) name = "Cave:" + RandomString(5, 5);
+                else if (monument.name.Contains("power_sub")) name = monument.name.Substring(monument.name.LastIndexOf("/") + 1).Replace(".prefab", "") + ":" + RandomString(5, 5);
+                else if (monuments.ContainsKey(name)) name += ":" + RandomString(5, 5);
+                float radius = GetMonumentFloat(name);
+                monuments[name] = new MonInfo() { Position = monument.transform.position, Radius = radius };
+            }
+
+            if (monuments.Count > 0) allowedMonuments = monuments.ToDictionary(k => k.Key, k => k.Value);
+
+            if (!_config.Monuments.Underground)
+            {
+                allowedMonuments.Remove("Sewer Branch");
+
+                foreach (var mon in allowedMonuments.ToList())
                 {
-                    allowedMonuments.Remove(m);
+                    if (mon.Key.Contains("Cave"))
+                    {
+                        allowedMonuments.Remove(mon.Key);
+                    }
                 }
             }
 
-            if (debug) Puts(string.Join(", ", allowedMonuments.Select(m => m.displayPhrase.english).ToArray()));
-
-            if (allowedMonuments.Count == 0)
+            foreach (var mon in allowedMonuments.ToList())
             {
-                onlyMonuments = false;
-                allowMonumentChance = 0f;
+                name = mon.Key.Contains(":") ? mon.Key.Substring(0, mon.Key.LastIndexOf(":")) : mon.Key.TrimEnd();
+
+                if (name.Contains("Oil Rig") || _config.Monuments.Blacklist.Any(str => name.ToLower().Trim() == str.ToLower().Trim()))
+                {
+                    allowedMonuments.Remove(mon.Key);
+                }
             }
 
             init = true;
             RemoveAllTemporaryMarkers();
 
-            if (includeWorkshopBox || includeWorkshopTreasure) SetWorkshopIDs(); // webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
+            if (_config.Skins.RandomWorkshopSkins || _config.Treasure.RandomWorkshopSkins) SetWorkshopIDs(); // webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
         }
 
         void Unload()
@@ -1248,30 +1681,25 @@ namespace Oxide.Plugins
             if (!init)
                 return;
 
-            unloading = true;
+            unloading = True;
 
-            if (treasureChests.Count > 0)
+            foreach(var chest in treasureChests.Values)
             {
-                foreach (var entry in treasureChests)
+                if (chest != null)
                 {
-                    var container = BaseEntity.serverEntities.Find(entry.Key) as StorageContainer;
+                    Puts(_("Destroyed Treasure Chest", null, chest.containerPos));
+                    chest.Kill();
+                    if (chest.container.IsValid())
+                    {
+                        chest.container.dropChance = 0f;
 
-                    if (container == null)
-                        continue;
-
-                    Puts(rf(szDestroyed, null, container.transform.position));
-                    container.inventory?.Clear();
-
-                    if (!container.IsDestroyed)
-                        container.Kill();
+                        if (!chest.container.IsDestroyed)
+                        {
+                            chest.container.Kill();
+                        }
+                    }
                 }
             }
-
-            var objects = GameObject.FindObjectsOfType(typeof(TreasureChest)); // this isn't needed but doesn't hurt to be here
-
-            if (objects != null)
-                foreach (var gameObj in objects)
-                    GameObject.Destroy(gameObj);
 
             if (lustyMarkers.Count > 0)
                 foreach (var entry in lustyMarkers.ToList())
@@ -1285,69 +1713,86 @@ namespace Oxide.Plugins
             chestLoot?.Clear();
             eventTimer?.Destroy();
             indestructibleWarnings.Clear();
-            countdownTimes.Clear();
             skinsCache.Clear();
             workshopskinsCache.Clear();
             RemoveAllTemporaryMarkers();
         }
 
-        object CanBradleyApcTarget(BradleyAPC apc, BaseEntity entity)
+        object canTeleport(BasePlayer player)
         {
-            if (entity is NPCPlayer && TreasureChest.HasNPC(entity.GetComponent<NPCPlayer>().userID))
-            {
-                return false;
-            }
-
-            return null;
+            return init && EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
         }
 
-        object OnNpcTarget(BaseEntity ent1, BaseEntity ent2)
+        object CanTeleport(BasePlayer player)
         {
-            var p1 = ent1 as BasePlayer;
-            var p2 = ent2 as BasePlayer;
+            return init && EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
+        }
+
+        object CanBradleyApcTarget(BradleyAPC apc, BaseEntity entity)
+        {
+            return TreasureChest.HasNPC(entity.GetComponent<NPCPlayerApex>()) ? (object)False : null;
+        }
+
+        object CanBeTargeted(BaseEntity npc, MonoBehaviour behaviour)
+        {
+            var player = npc as BasePlayer;
+
+            if (player != null && !player.IsNpc)
+            {
+                return player?.net != null && newmanProtections.Contains(player.net.ID) ? (object)False : null;
+            }
+
+            return EventTerritory(npc.transform.position, 10f) ? (object)False : null;
+        }
+
+        object OnNpcTarget(BaseEntity npc, BaseEntity target)
+        {
+            var p1 = npc as BasePlayer;
+            var p2 = target as BasePlayer;
 
             if (p1 && p2)
             {
-                return TreasureChest.HasNPC(p1.userID, p2.userID) || p2.net != null && newmanProtections.Contains(p2.net.ID) ? (object)true : null;
+                if (TreasureChest.HasNPC(p1.userID, p2.userID))
+                {
+                    return True;
+                }
+                else if (p2.net != null && newmanProtections.Contains(p2.net.ID))
+                {
+                    return True;
+                }
             }
-            else if (p1 && ent2 is BaseNpc)
+            else if (p1 && target is BaseNpc)
             {
-                return TreasureChest.HasNPC(p1.userID) ? (object)true : null;
+                return TreasureChest.HasNPC(p1.userID) ? (object)True : null;
             }
-            else if (p2 && ent1 is BaseNpc)
+            else if (p2 && npc is BaseNpc)
             {
-                return TreasureChest.HasNPC(p2.userID) ? (object)true : null;
+                return TreasureChest.HasNPC(p2.userID) ? (object)True : null;
             }
 
             return null;
-        }
-
-        void OnPlayerInit(BasePlayer player)
-        {
-            foreach (var entry in treasureChests.Values.ToList())
-            {
-                entry.UpdateMarker();
-            }
         }
 
         void OnPlayerDeath(BasePlayer player)
         {
-            if (!init || !player || !(player is NPCPlayer))
+            if (!init || !player || !player.IsNpc)
                 return;
 
             var chest = TreasureChest.GetNPC(player.userID);
-            
+
             if (chest != null)
             {
                 player.svActiveItemID = 0;
                 player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
 
-                if (unlockWhenNpcsDie && chest.npcs.Count <= 1)
+                if (_config.Unlock.WhenNpcsDie && chest.npcs.Count <= 1)
                 {
                     chest.Unlock();
                 }
             }
         }
+
+        //void OnEntityGroundMissing(BaseEntity entity)
 
         void OnEntitySpawned(BaseNetworkable entity)
         {
@@ -1362,7 +1807,7 @@ namespace Oxide.Plugins
                     {
                         foreach (var x in treasureChests.Values)
                         {
-                            if (Vector3.Distance(entity.transform.position, x.containerPos) <= eventRadius)
+                            if (entity.HasParent() && entity.GetParentEntity() == x.container)
                             {
                                 entity.KillMessage();
                                 break;
@@ -1372,14 +1817,9 @@ namespace Oxide.Plugins
                 });
             }
 
-            if (!spawnNpcs)
+            if (!_config.NPC.Enabled)
             {
                 return;
-            }
-
-            if (entity as Scientist != null && AllScientists != null)
-            {
-                AllScientists.SetValue((entity as Scientist), new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #1
             }
 
             var corpse = entity as NPCPlayerCorpse;
@@ -1389,40 +1829,14 @@ namespace Oxide.Plugins
                 return;
             }
 
-            TreasureChest chest = null;
-
-            foreach (var x in treasureChests.Values)
-            {
-                foreach (var npc in x.npcs)
-                {
-                    if (npc.userID == corpse.playerSteamID)
-                    {
-                        if (spawnsDespawnInventory)
-                        {
-                            NextTick(() =>
-                            {
-                                if (corpse != null && !corpse.IsDestroyed && corpse.containers != null)
-                                {
-                                    for (int i = 0; i < corpse.containers.Count(); i++)
-                                    {
-                                        corpse.containers[i].Clear();
-                                    }
-                                }
-                            });
-                        }
-
-                        corpse._playerName = npc.displayName;
-                        chest = x;
-                        break;
-                    }
-                }
-            }
+            var chest = TreasureChest.GetNPC(corpse.playerSteamID);
 
             if (chest == null)
             {
                 return;
             }
 
+            if (_config.NPC.DespawnInventory) corpse.Invoke(corpse.KillMessage, 30f);
             chest.npcs.RemoveAll(npc => npc.userID == corpse.playerSteamID);
 
             foreach (var x in treasureChests.Values)
@@ -1433,64 +1847,43 @@ namespace Oxide.Plugins
                 }
             }
 
+            Unsubscribe(nameof(CanBeTargeted));
             Unsubscribe(nameof(OnNpcTarget));
             Unsubscribe(nameof(CanBradleyApcTarget));
             Unsubscribe(nameof(OnPlayerDeath));
-            Unsubscribe(nameof(OnPlayerInit));
         }
 
-        object CanBuild(Planner plan, Construction prefab)
+        object CanBuild(Planner planner, Construction prefab, Construction.Target target)
         {
-            if (!init || plan?.GetOwnerPlayer() == null)
-                return null;
+            var player = planner?.GetOwnerPlayer();
 
-            var player = plan.GetOwnerPlayer();
+            if (!player || player.IsAdmin) return null;
 
-            if (player.IsAdmin) return null;
+            var chest = TreasureChest.Get(player.transform.position);
 
-            foreach (var entry in treasureChests)
+            if (chest != null)
             {
-                if (Vector3.Distance(player.transform.position, entry.Value.containerPos) <= eventRadius)
-                {
-                    Message(player, msg(szBuildingBlocked, player.UserIDString));
-                    return false;
-                }
+                Message(player, msg("Building is blocked!", player.UserIDString));
+                return False;
             }
 
             return null;
         }
 
-        object CanAcceptItem(ItemContainer container, Item item, int targetPos)
-        {
-            if (!init || container?.entityOwner?.net == null)
-                return null;
-
-            return treasureChests.ContainsKey(container.entityOwner.net.ID) ? (object)ItemContainer.CanAcceptResult.CannotAccept : null;
-        }
-
         void OnLootEntity(BasePlayer player, BaseEntity entity)
         {
-            if (!init || player == null || entity?.net == null || !(entity is StorageContainer) || !treasureChests.ContainsKey(entity.net.ID))
+            if (!init || !player || entity == null || entity.net == null || !(entity is StorageContainer) || !treasureChests.ContainsKey(entity.net.ID))
                 return;
 
             if (player.isMounted)
             {
                 Message(player, msg("CannotBeMounted", player.UserIDString));
-
-                NextTick(() =>
-                {
-                    player.EndLooting();
-                });
-
+                NextTick(player.EndLooting);
                 return;
             }
+            else looters[entity.net.ID] = player.UserIDString;
 
-            if (looters.ContainsKey(entity.net.ID))
-                looters.Remove(entity.net.ID);
-
-            looters.Add(entity.net.ID, player.UserIDString);
-
-            if (showOpenedMsg)
+            if (_config.EventMessages.FirstOpened)
             {
                 var chest = treasureChests[entity.net.ID];
 
@@ -1503,6 +1896,23 @@ namespace Oxide.Plugins
                         Message(target, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
                 }
             }
+        }
+
+        bool IsOnSameTeam(ulong playerId, ulong targetId)
+        {
+            RelationshipManager.PlayerTeam team1;
+            if (!RelationshipManager.Instance.playerToTeam.TryGetValue(playerId, out team1))
+            {
+                return false;
+            }
+
+            RelationshipManager.PlayerTeam team2;
+            if (!RelationshipManager.Instance.playerToTeam.TryGetValue(targetId, out team2))
+            {
+                return false;
+            }
+
+            return team1.teamID == team2.teamID;
         }
 
         void OnItemRemovedFromContainer(ItemContainer container, Item item)
@@ -1534,7 +1944,7 @@ namespace Oxide.Plugins
 
                     if (looter != null)
                     {
-                        if (recordStats)
+                        if (_config.RankedLadder.Enabled)
                         {
                             if (!storedData.Players.ContainsKey(looter.UserIDString))
                                 storedData.Players.Add(looter.UserIDString, new PlayerInfo());
@@ -1545,36 +1955,36 @@ namespace Oxide.Plugins
                         }
 
                         var posStr = FormatGridReference(looter.transform.position);
-                        Puts(rf(szEventThief, null, posStr, looter.displayName));
+                        Puts(_("pThief", null, posStr, looter.displayName));
 
                         foreach (var target in BasePlayer.activePlayerList)
-                            Message(target, msg(szEventThief, target.UserIDString, posStr, looter.displayName));
+                            Message(target, msg("pThief", target.UserIDString, posStr, looter.displayName));
 
                         looter.EndLooting();
 
-                        if (useEconomics && economicsMoney > 0)
+                        if (_config.Rewards.Economics && _config.Rewards.Money > 0)
                         {
                             if (Economics != null)
                             {
-                                Economics?.Call("Deposit", looter.UserIDString, economicsMoney);
-                                Message(looter, msg(szEconomicsDeposit, looter.UserIDString, economicsMoney));
+                                Economics?.Call("Deposit", looter.UserIDString, _config.Rewards.Money);
+                                Message(looter, msg("EconomicsDeposit", looter.UserIDString, _config.Rewards.Money));
                             }
                         }
 
-                        if (useServerRewards && serverRewardsPoints > 0)
+                        if (_config.Rewards.ServerRewards && _config.Rewards.Points > 0)
                         {
                             if (ServerRewards != null)
                             {
-                                var success = ServerRewards?.Call("AddPoints", looter.userID, (int)serverRewardsPoints);
+                                var success = ServerRewards?.Call("AddPoints", looter.userID, (int)_config.Rewards.Points);
 
                                 if (success != null && success is bool && (bool)success)
-                                    Message(looter, msg(szRewardPoints, looter.UserIDString, (int)serverRewardsPoints));
+                                    Message(looter, msg("ServerRewardPoints", looter.UserIDString, (int)_config.Rewards.Points));
                             }
                         }
                     }
 
-                    ins.RemoveLustyMarker(box.net.ID);
-                    ins.RemoveMapMarker(box.net.ID);
+                    RemoveLustyMarker(box.net.ID);
+                    RemoveMapMarker(box.net.ID);
 
                     if (!box.IsDestroyed)
                         box.Kill();
@@ -1585,46 +1995,69 @@ namespace Oxide.Plugins
             });
         }
 
+        object CanEntityBeTargeted(BasePlayer player, BaseEntity target)
+        {
+            return player.IsValid() && !player.IsNpc && target.IsValid() && EventTerritory(player.transform.position) && IsTrueDamage(target) ? (object)True : null;
+        }
+
+        object CanEntityTrapTrigger(BaseTrap trap, BasePlayer player)
+        {
+            return player.IsValid() && !player.IsNpc && trap.IsValid() && EventTerritory(player.transform.position) ? (object)True : null;
+        }
+        
         object CanEntityTakeDamage(BaseEntity entity, HitInfo hitInfo) // TruePVE!!!! <3 @ignignokt84
         {
-            if (entity == null || hitInfo == null)
+            if (!entity.IsValid() || hitInfo == null)
             {
                 return null;
-            }
-
-            if (truePVEServerWidePVP && hitInfo.InitiatorPlayer != null && entity is BasePlayer) // 1.2.9 & 1.3.3
-            {
-                return true;
             }
 
             var attacker = hitInfo.InitiatorPlayer;
 
-            if (attacker == null)
+            if (_config.TruePVE.ServerWidePVP && attacker.IsValid() && entity is BasePlayer && treasureChests.Count > 0) // 1.2.9 & 1.3.3 & 1.6.4
             {
-                return null;
+                return true;
             }
 
-            if (EventTerritory(entity.transform.position) && EventTerritory(attacker.transform.position))
+            if (EventTerritory(entity.transform.position)) // 1.5.8 & 1.6.4
             {
-                if (truePVEAllowPVPAtEvents && entity is BasePlayer) // 1.2.9
+                if (attacker.IsValid()) 
                 {
-                    return true;
+                    if (EventTerritory(attacker.transform.position) && _config.TruePVE.AllowPVPAtEvents && entity is BasePlayer) // 1.2.9
+                    {
+                        return True;
+                    }
+
+                    if (EventTerritory(attacker.transform.position) && _config.TruePVE.AllowBuildingDamageAtEvents) // 1.3.3
+                    {
+                        return True;
+                    }
                 }
 
-                if (entity.name.Contains("building") && truePVEAllowBuildingDamageAtEvents) // 1.3.3
+                if (IsTrueDamage(hitInfo.Initiator))
                 {
-                    return true;
+                    return True;
                 }
             }
 
-            return null;
+            return null; // 1.6.4 rewrite
         }
 
-        bool EventTerritory(Vector3 position)
+        bool IsTrueDamage(BaseEntity entity)
         {
-            foreach(var x in treasureChests.Values)
+            if (!entity.IsValid())
             {
-                if (Vector3.Distance(x.containerPos, new Vector3(position.x, x.containerPos.y, position.z)) <= eventRadius)
+                return False;
+            }
+
+            return entity is AutoTurret || entity is BearTrap || entity is FlameTurret || entity is Landmine || entity is GunTrap || entity is ReactiveTarget || entity.name.Contains("spikes.floor") || entity is FireBall;
+        }
+
+        bool EventTerritory(Vector3 target, float f = 10f)
+        {
+            foreach (var x in treasureChests.Values)
+            {
+                if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius + f)
                 {
                     return true;
                 }
@@ -1638,34 +2071,39 @@ namespace Oxide.Plugins
             if (!init || entity?.net == null)
                 return;
 
-            bool newman = newmanProtections.Contains(entity.net.ID);
-            bool chest = treasureChests.ContainsKey(entity.net.ID);
+            bool isNewman = newmanProtections.Contains(entity.net.ID);
+            bool isChest = treasureChests.ContainsKey(entity.net.ID);
 
-            if (newman || chest)
+            if (isNewman || isChest)
             {
-                var attacker = hitInfo?.InitiatorPlayer ?? null;
+                var attacker = hitInfo?.InitiatorPlayer;
 
-                if (attacker && !(attacker is NPCPlayerApex))
+                if (attacker != null)
                 {
-                    ulong uid = attacker.userID;
-
-                    if (!indestructibleWarnings.Contains(uid))
+                    if (hitInfo != null && hitInfo.hasDamage)
                     {
-                        indestructibleWarnings.Add(uid);
-                        timer.Once(10f, () => indestructibleWarnings.Remove(uid));
-                        Message(attacker, msg(chest ? szIndestructible : szNewmanProtected, attacker.UserIDString));
+                        hitInfo.damageTypes.ScaleAll(0f);
                     }
-                }
 
-                if (hitInfo != null && hitInfo.hasDamage)
-                {
-                    hitInfo.damageTypes.ScaleAll(0f);
+                    if (!attacker.IsNpc)
+                    {
+                        ulong uid = attacker.userID;
+
+                        if (!indestructibleWarnings.Contains(uid))
+                        {
+                            indestructibleWarnings.Add(uid);
+                            timer.Once(10f, () => indestructibleWarnings.Remove(uid));
+                            Message(attacker, msg(isChest ? "Indestructible" : "Newman Protected", attacker.UserIDString));
+                        }
+
+                        return;
+                    }
                 }
             }
 
-            var npc = entity as NPCPlayer;
+            var npc = entity as NPCPlayerApex;
 
-            if (!npc || !TreasureChest.HasNPC(npc.userID))
+            if (!TreasureChest.HasNPC(npc))
                 return;
 
             if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions/other
@@ -1678,6 +2116,9 @@ namespace Oxide.Plugins
 
         static void Message(BasePlayer target, string message)
         {
+            if (target == null)
+                return;
+
             ins.Player.Message(target, message, 0uL);
         }
 
@@ -1685,34 +2126,31 @@ namespace Oxide.Plugins
         {
             if (flag && init)
             {
-                if (spawnNpcs)
+                if (_config.NPC.Enabled)
                 {
                     Subscribe(nameof(OnPlayerDeath));
                 }
 
-                if (truePVEAllowPVPAtEvents || truePVEServerWidePVP)
+                if (_config.TruePVE.AllowPVPAtEvents || _config.TruePVE.ServerWidePVP)
                 {
                     Subscribe(nameof(CanEntityTakeDamage));
                 }
 
                 Subscribe(nameof(OnEntitySpawned));
-
-                if (MarkerManager == null)
-                {
-                    Subscribe(nameof(OnPlayerInit));
-                }
-
                 Subscribe(nameof(CanBradleyApcTarget));
                 Subscribe(nameof(OnNpcTarget));
                 Subscribe(nameof(OnEntityTakeDamage));
                 Subscribe(nameof(OnItemRemovedFromContainer));
                 Subscribe(nameof(OnLootEntity));
-                Subscribe(nameof(CanAcceptItem));
                 Subscribe(nameof(CanBuild));
+                Subscribe(nameof(CanTeleport));
+                Subscribe(nameof(canTeleport));
             }
             else
             {
-                Unsubscribe(nameof(OnPlayerInit));
+                Unsubscribe(nameof(CanTeleport));
+                Unsubscribe(nameof(canTeleport));
+                Unsubscribe(nameof(CanBeTargeted));
                 Unsubscribe(nameof(CanEntityTakeDamage));
                 Unsubscribe(nameof(CanBradleyApcTarget));
                 Unsubscribe(nameof(OnNpcTarget));
@@ -1720,338 +2158,8 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnEntityTakeDamage));
                 Unsubscribe(nameof(OnItemRemovedFromContainer));
                 Unsubscribe(nameof(OnLootEntity));
-                Unsubscribe(nameof(CanAcceptItem));
                 Unsubscribe(nameof(CanBuild));
                 Unsubscribe(nameof(OnPlayerDeath));
-            }
-        }
-
-        static List<Vector3> GetRandomPositions(Vector3 destination, float radius, int amount, float y)
-        {
-            var positions = new List<Vector3>();
-
-            if (amount <= 0)
-                return positions;
-
-            int retries = 100;
-            float space = (radius / amount); // space each rocket out from one another
-
-            for (int i = 0; i < amount; i++)
-            {
-                var position = destination + UnityEngine.Random.insideUnitSphere * radius;
-
-                position.y = y != 0f ? y : UnityEngine.Random.Range(100f, 200f);
-
-                var match = Vector3.zero;
-
-                foreach(var p in positions)
-                {
-                    if (Vector3.Distance(p, position) < space)
-                    {
-                        match = p;
-                        break;
-                    }
-                }
-
-                if (match != Vector3.zero)
-                {
-                    if (--retries < 0)
-                        break;
-
-                    i--;
-                    continue;
-                }
-
-                retries = 100;
-                positions.Add(position);
-            }
-
-            return positions;
-        }
-
-        public Vector3 GetEventPosition()
-        {
-            if (sd_customPos != Vector3.zero)
-                return sd_customPos;
-
-            var eventPos = Vector3.zero;
-            int maxRetries = 100;
-
-            if (allowMonumentChance > 0f && UnityEngine.Random.Range(0.1f, 1.0f) >= allowMonumentChance)
-            {
-                return GetMonumentDropPosition();
-            }
-
-            if (onlyMonuments)
-            {
-                return GetMonumentDropPosition();
-            }
-
-            do
-            {
-                eventPos = GetSafeDropPosition(RandomDropPosition());
-
-                if (eventPos == Vector3.zero)
-                    continue;
-
-                if (Interface.CallHook("OnDangerousOpen", eventPos) != null)
-                {
-                    eventPos = Vector3.zero;
-                    continue;
-                }
-
-                foreach(var x in treasureChests.Values)
-                {
-                    if (Vector3.Distance(x.containerPos, eventPos) <= eventRadius * 2)
-                    {
-                        eventPos = Vector3.zero;
-                        break;
-                    }
-                }
-
-                if (eventPos == Vector3.zero) continue;
-
-                if (managedZones.Count > 0)
-                {
-                    foreach (var zone in managedZones)
-                    {
-                        if (Vector3.Distance(zone.Key, eventPos) <= zone.Value)
-                        {
-                            eventPos = Vector3.zero; // blocked by zone manager
-                            break;
-                        }
-                    }
-                }
-
-                if (IsMonumentPosition(eventPos)) // don't put the treasure chest near a monument
-                {
-                    eventPos = Vector3.zero;
-                }
-            } while (eventPos == Vector3.zero && --maxRetries > 0);
-
-            return eventPos;
-        }
-
-        public Vector3 GetSafeDropPosition(Vector3 position)
-        {
-            RaycastHit hit;
-            position.y += 200f;
-
-            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightLayer, QueryTriggerInteraction.Ignore))
-            {
-                if (!BlockedLayers.Contains(hit.collider.gameObject.layer))
-                {
-                    position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
-
-                    if (!IsLayerBlocked(position, eventRadius + 25f, obstructionLayer))
-                    {
-                        return position;
-                    }
-                }
-            }
-
-            return Vector3.zero;
-        }
-
-        public bool IsLayerBlocked(Vector3 position, float radius, int mask)
-        {
-            if (IsInOrOnRock(position))
-            {
-                return true;
-            }
-
-            var colliders = Pool.GetList<Collider>();
-            Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
-
-            colliders.RemoveAll(collider => collider.GetComponent<NPCPlayerApex>() != null || (!collider.GetComponent<BaseEntity>()?.OwnerID.IsSteamId() ?? true));
-
-            bool blocked = colliders.Count > 0;
-
-            Pool.FreeList<Collider>(ref colliders);
-
-            return blocked;
-        }
-
-        private bool IsInOrOnRock(Vector3 position)
-        {
-            var colliders = Physics.OverlapSphere(position, 0.25f, worldLayer, QueryTriggerInteraction.Ignore);
-            foreach (var collider in colliders)
-            {
-                var meshCollider = collider.gameObject?.GetComponent<MeshCollider>();
-                if (meshCollider == null || !meshCollider.sharedMesh.name.StartsWith("rock_")) continue;
-                return true;
-            }
-            return false;
-        }
-
-        public Vector3 GetRandomMonumentDropPosition(Vector3 position)
-        {
-            foreach(var monument in allowedMonuments)
-            {
-                if (Vector3.Distance(monument.transform.position, position) < 75f)
-                {
-                    int attempts = 100;
-
-                    while (--attempts > 0)
-                    {
-                        var randomPoint = monument.transform.position + UnityEngine.Random.insideUnitSphere * 75f;
-                        randomPoint.y = 100f;
-
-                        RaycastHit hit;
-                        if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightLayer, QueryTriggerInteraction.Ignore))
-                        {
-                            if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
-                            {
-                                if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionLayer))
-                                {
-                                    return hit.point;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return Vector3.zero;
-        }
-
-        public bool IsMonumentPosition(Vector3 target)
-        {
-            OBB obb;
-            Bounds bounds;
-
-            foreach (var monument in monuments)
-            {
-                bounds = new Bounds(monument.Bounds.center, monument.Bounds.size);
-                bounds.Expand(15f);
-                obb = new OBB(monument.transform.position, Quaternion.identity, monument.Bounds);
-
-                if (obb.Contains(target))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        public Vector3 GetMonumentDropPosition()
-        {
-            var list = allowedMonuments.ToList();
-
-            MonumentInfo monument = null;
-
-            while (monument == null && list.Count > 0)
-            {
-                var mon = list.GetRandom();
-
-                foreach (var x in treasureChests.Values) // 1.3.1
-                {
-                    if (Vector3.Distance(x.containerPos, mon.transform.position) <= eventRadius * 2)
-                    {
-                        list.Remove(mon);
-                        break;
-                    }
-                }
-
-                if (!list.Contains(mon))
-                {
-                    continue;
-                }
-
-                if (!IsLayerBlocked(mon.transform.position, eventRadius + 25f, obstructionLayer))
-                {
-                    monument = mon;
-                    break;
-                }
-
-                list.Remove(mon);
-            }
-
-            if (monument == null)
-            {
-                return Vector3.zero;
-            }
-
-            var entities = new List<BaseNetworkable>();
-
-            foreach(var e in BaseNetworkable.serverEntities)
-            {
-                if (e != null && e.transform != null && !entities.Contains(e) && Vector3.Distance(e.transform.position, monument.transform.position) < eventRadius && IsValidSpawn(e))
-                {
-                    entities.Add(e);
-                }
-            }
-
-            if (!undergroundLoot)
-            {
-                entities.RemoveAll(e => e.transform.position.y < monument.transform.position.y);
-            }
-
-            if (entities.Count < 2)
-            {
-                var pos = GetRandomMonumentDropPosition(monument.transform.position);
-                return pos == Vector3.zero ? GetMonumentDropPosition() : pos;
-            }
-
-            var entity = entities.GetRandom();
-            /*bool isValid = true;
-
-            while (entities.Count > 1)
-            {
-                entity = entities.GetRandom();
-
-                foreach (var x in treasureChests.Values)
-                {
-                    if (Vector3.Distance(x.containerPos, entity.transform.position) < eventRadius)
-                    {
-                        isValid = false;
-                        entities.Remove(entity);
-                        break;
-                    }
-                }
-
-                if (isValid)
-                    break;
-            }*/
-
-            if (entity.net == null)
-                entity.net = Network.Net.sv.CreateNetworkable();
-
-            storage.Add(entity.net.ID);
-
-            return entity.transform.position; // GetComponent<BaseEntity>().WorldSpaceBounds().ToBounds().center;
-        }
-
-        public Vector3 RandomDropPosition() // CargoPlane.RandomDropPosition()
-        {
-            var vector = Vector3.zero;
-            float num = 100f, x = TerrainMeta.Size.x / 3f;
-            do
-            {
-                vector = Vector3Ex.Range(-x, x);
-            }
-            while (filter.GetFactor(vector) == 0f && (num -= 1f) > 0f);
-            vector.y = 0f;
-            return vector;
-        }
-
-        void GetWorkshopIDs(int code, string response)
-        {
-            if (response != null && code == 200)
-            {
-                var items = JsonConvert.DeserializeObject<Rust.Workshop.ItemSchema>(response).items;
-
-                foreach (var item in items)
-                {
-                    if (string.IsNullOrEmpty(item.itemshortname) || string.IsNullOrEmpty(item.workshopdownload))
-                        continue;
-
-                    if (!workshopskinsCache.ContainsKey(item.itemshortname))
-                        workshopskinsCache.Add(item.itemshortname, new List<ulong>());
-
-                    workshopskinsCache[item.itemshortname].Add(Convert.ToUInt64(item.workshopdownload));
-                }
             }
         }
 
@@ -2086,13 +2194,321 @@ namespace Oxide.Plugins
             catch { }
         }
 
+        static List<Vector3> GetRandomPositions(Vector3 destination, float radius, int amount, float y)
+        {
+            var positions = new List<Vector3>();
+
+            if (amount <= 0)
+                return positions;
+
+            int retries = 100;
+            float space = (radius / amount); // space each rocket out from one another
+
+            for (int i = 0; i < amount; i++)
+            {
+                var position = destination + UnityEngine.Random.insideUnitSphere * radius;
+
+                position.y = y != 0f ? y : UnityEngine.Random.Range(100f, 200f);
+
+                var match = Vector3.zero;
+
+                foreach (var p in positions)
+                {
+                    if (Vector3.Distance(p, position) < space)
+                    {
+                        match = p;
+                        break;
+                    }
+                }
+
+                if (match != Vector3.zero)
+                {
+                    if (--retries < 0)
+                        break;
+
+                    i--;
+                    continue;
+                }
+
+                retries = 100;
+                positions.Add(position);
+            }
+
+            return positions;
+        }
+
+        List<Vector3> _cachedPos = new List<Vector3>();
+
+        public Vector3 GetEventPosition()
+        {
+            if (sd_customPos != Vector3.zero)
+                return sd_customPos;
+
+            float radius = _config.Event.Radius / 2f;
+
+            var eventPos = Vector3.zero;
+            
+            if (_config.Monuments.Chance > 0f && UnityEngine.Random.Range(0.1f, 1.0f) >= _config.Monuments.Chance && allowedMonuments.Count > 0)
+            {
+                return GetMonumentDropPosition();
+            }
+
+            if (_config.Monuments.Only && allowedMonuments.Count > 0)
+            {
+                return GetMonumentDropPosition();
+            }
+
+            int maxRetries = 500;
+            
+            do
+            {
+                eventPos = GetSafeDropPosition(RandomDropPosition());
+
+                if (eventPos == Vector3.zero) continue;
+                if (_cachedPos.Count > maxRetries) _cachedPos.Clear();
+
+                if (!_cachedPos.Contains(eventPos) && radius <= 50)
+                {
+                    foreach(var position in _cachedPos)
+                    {
+                        if ((position - eventPos).magnitude <= radius)
+                        {
+                            maxRetries++;
+                            continue;
+                        }
+                    }
+
+                    _cachedPos.Add(eventPos);
+                }
+
+                foreach (var x in treasureChests.Values)
+                {
+                    if (Vector3.Distance(x.containerPos, eventPos) <= x.Radius * 2)
+                    {
+                        eventPos = Vector3.zero;
+                        continue;
+                    }
+                }
+
+                if (managedZones.Count > 0)
+                {
+                    foreach (var zone in managedZones)
+                    {
+                        if (Vector3.Distance(zone.Key, eventPos) <= zone.Value)
+                        {
+                            eventPos = Vector3.zero; // blocked by zone manager
+                            continue;
+                        }
+                    }
+                }
+
+                if (IsMonumentPosition(eventPos)) // don't put the treasure chest near a monument
+                {
+                    eventPos = Vector3.zero;
+                    continue;
+                }
+            } while (eventPos == Vector3.zero && --maxRetries > 0);
+
+            return eventPos;
+        }
+
+        public Vector3 GetSafeDropPosition(Vector3 position)
+        {
+            RaycastHit hit;
+            position.y += 200f;
+
+            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightLayer, QueryTriggerInteraction.Ignore))
+            {
+                if (!BlockedLayers.Contains(hit.collider.gameObject.layer))
+                {
+                    position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
+
+                    if (!IsLayerBlocked(position, _config.Event.Radius + 25f, obstructionLayer))
+                    {
+                        return position;
+                    }
+                }
+            }
+
+            return Vector3.zero;
+        }
+
+        public bool IsLayerBlocked(Vector3 position, float radius, int mask)
+        {
+            var colliders = new List<Collider>();
+            Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
+
+            colliders.RemoveAll(collider => (collider.ToBaseEntity()?.IsNpc ?? false) || !(collider.ToBaseEntity()?.OwnerID.IsSteamId() ?? true));
+
+            bool blocked = colliders.Count > 0;
+
+            colliders.Clear();
+            colliders = null;
+
+            return blocked;
+        }
+
+        private bool IsInOrOnRock(Vector3 position, string meshName)
+        {
+            bool flag = False;
+            int hits = Physics.OverlapSphereNonAlloc(position, 2f, Vis.colBuffer, worldLayer, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < hits; i++)
+            {
+                if (Vis.colBuffer[i].name.StartsWith(meshName)) flag = True;
+                Vis.colBuffer[i] = null;
+            }
+            if (!flag)
+            {
+                float y = TerrainMeta.HighestPoint.y + 250f;
+                RaycastHit hit;
+                if (Physics.Raycast(position, Vector3.up, out hit, y, worldLayer, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.collider.name.StartsWith(meshName)) flag = True;
+                }
+                if (!flag && Physics.Raycast(position, Vector3.down, out hit, y, worldLayer, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.collider.name.StartsWith(meshName)) flag = True;
+                }
+                if (!flag && Physics.Raycast(position + new Vector3(0f, y, 0f), Vector3.down, out hit, y + 1f, worldLayer, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.collider.name.StartsWith(meshName)) flag = True;
+                }
+            }
+            return flag;
+        }
+
+        public Vector3 GetRandomMonumentDropPosition(Vector3 position)
+        {
+            foreach (var monument in allowedMonuments)
+            {
+                if (Vector3.Distance(monument.Value.Position, position) < 75f)
+                {
+                    int attempts = 100;
+
+                    while (--attempts > 0)
+                    {
+                        var randomPoint = monument.Value.Position + UnityEngine.Random.insideUnitSphere * 75f;
+                        randomPoint.y = 100f;
+
+                        RaycastHit hit;
+                        if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightLayer, QueryTriggerInteraction.Ignore))
+                        {
+                            if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
+                            {
+                                if (!IsLayerBlocked(hit.point, _config.Event.Radius + 25f, obstructionLayer))
+                                {
+                                    return hit.point;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Vector3.zero;
+        }
+
+        public bool IsMonumentPosition(Vector3 target)
+        {
+            foreach (var monument in monuments)
+            {
+                var position = new Vector3(monument.Value.Position.x, target.y, monument.Value.Position.z);
+
+                if ((position - target).magnitude < monument.Value.Radius)
+                {
+                    return True;
+                }
+            }
+
+            return False;
+        }
+
+        public Vector3 GetMonumentDropPosition()
+        {
+            var list = allowedMonuments.ToList();
+            var monPosition = Vector3.zero;
+
+            while (monPosition == Vector3.zero && list.Count > 0)
+            {
+                var mon = list.GetRandom();
+
+                foreach (var x in treasureChests.Values) // 1.3.1
+                {
+                    if (Vector3.Distance(x.containerPos, mon.Value.Position) <= _config.Event.Radius) //* 2)
+                    {
+                        list.Remove(mon);
+                        break;
+                    }
+                }
+
+                if (!list.Contains(mon))
+                {
+                    continue;
+                }
+
+                if (!IsLayerBlocked(mon.Value.Position, _config.Event.Radius + 25f, obstructionLayer))
+                {
+                    monPosition = mon.Value.Position;
+                    break;
+                }
+
+                list.Remove(mon);
+            }
+
+            if (monPosition == Vector3.zero)
+            {
+                return Vector3.zero;
+            }
+
+            var entities = new List<BaseNetworkable>();
+
+            foreach (var e in BaseNetworkable.serverEntities) // TODO: cache this
+            {
+                if (e != null && e.transform != null && !entities.Contains(e) && (e.transform.position - monPosition).magnitude < _config.Event.Radius && IsValidSpawn(e))
+                {
+                    entities.Add(e);
+                }
+            }
+
+            if (!_config.Monuments.Underground)
+            {
+                entities.RemoveAll(e => e.transform.position.y < monPosition.y);
+            }
+
+            if (entities.Count < 2)
+            {
+                var pos = GetRandomMonumentDropPosition(monPosition);
+                return pos == Vector3.zero ? GetMonumentDropPosition() : pos;
+            }
+
+            var entity = entities.GetRandom();
+            var position = entity.transform.position;
+
+            if (entity is LootContainer) entity.Kill();
+
+            return position;
+        }
+
+        public Vector3 RandomDropPosition() // CargoPlane.RandomDropPosition()
+        {
+            var vector = Vector3.zero;
+            float num = 100f, x = TerrainMeta.Size.x / 3f;
+            do
+            {
+                vector = Vector3Ex.Range(-x, x);
+            }
+            while (filter.GetFactor(vector) == 0f && (num -= 1f) > 0f);
+            vector.y = 0f;
+            return vector;
+        }
+
         List<ulong> GetItemSkins(ItemDefinition def)
         {
             if (!skinsCache.ContainsKey(def.shortname))
             {
                 var skins = def.skins.Select(skin => Convert.ToUInt64(skin.id)).ToList();
 
-                if ((def.shortname == boxShortname && includeWorkshopBox) || (def.shortname != boxShortname && includeWorkshopTreasure))
+                if ((def.shortname == boxShortname && _config.Skins.RandomWorkshopSkins) || (def.shortname != boxShortname && _config.Treasure.RandomWorkshopSkins))
                 {
                     if (workshopskinsCache.ContainsKey(def.shortname))
                     {
@@ -2125,31 +2541,17 @@ namespace Oxide.Plugins
             return skinsCache[def.shortname];
         }
 
-        public Vector3 GetNewEvent()
-        {
-            var position = TryOpenEvent();
-            //if (position != Vector3.zero)
-            //Puts(rconmsg(szEventAt, null, FormatGridReference(position)));
-
-            return position;
-        }
-
-        public Vector3 TryOpenEvent(BasePlayer player = null)
+        TreasureChest TryOpenEvent(BasePlayer player = null)
         {
             var eventPos = Vector3.zero;
 
-            if (treasureChests.Count >= maxEvents)
-            {
-                return eventPos;
-            }
-
-            if (player)
+            if (player.IsValid())
             {
                 RaycastHit hit;
 
                 if (!Physics.Raycast(player.eyes.HeadRay(), out hit, Mathf.Infinity, heightLayer))
                 {
-                    return Vector3.zero;
+                    return null;
                 }
 
                 eventPos = hit.point;
@@ -2160,7 +2562,7 @@ namespace Oxide.Plugins
 
                 if (randomPos == Vector3.zero)
                 {
-                    return Vector3.zero;
+                    return null;
                 }
 
                 eventPos = randomPos;
@@ -2168,15 +2570,14 @@ namespace Oxide.Plugins
 
             var container = GameManager.server.CreateEntity(boxPrefab, eventPos, new Quaternion(), true) as StorageContainer;
 
-            if (!container)
+            if (container == null)
             {
-                Puts(rf(szInvalidConstant, null, boxPrefab));
-                return Vector3.zero;
+                return null;
             }
 
-            if (presetSkin != 0uL)
-                container.skinID = presetSkin;
-            else if (useRandomBoxSkin && boxDef != null)
+            if (_config.Skins.PresetSkin != 0uL)
+                container.skinID = _config.Skins.PresetSkin;
+            else if (useRandomSkins && boxDef != null)
             {
                 var skins = GetItemSkins(boxDef);
 
@@ -2186,106 +2587,25 @@ namespace Oxide.Plugins
 
             container.SetFlag(BaseEntity.Flags.Locked, true);
             container.SetFlag(BaseEntity.Flags.OnFire, true);
-            container.Spawn();
+            if (!container.isSpawned) container.Spawn();
 
-            if (storage.Count > 0)
+            TreasureChest.SetLoot(container, chestLoot);
+
+            var chest = container.gameObject.AddComponent<TreasureChest>();
+            chest.Radius = _config.Event.Radius;
+
+            if (container.enableSaving)
             {
-                foreach(uint bid in storage.ToList())
-                {
-                    var box = BaseNetworkable.serverEntities.Find(bid) as StorageContainer;
-
-                    if (box != null && !box.IsDestroyed)
-                    {
-                        box.inventory?.Clear();
-                        box.Kill();
-                        storage.Remove(bid);
-                    }
-                }
+                container.enableSaving = false;
+                BaseEntity.saveList.Remove(container);
             }
-
-            var treasureChest = container.gameObject.AddComponent<TreasureChest>();
-
-            if (chestLoot.Count > 0)
-            {
-                var indices = new List<int>();
-                int index = 0, indicer = 100, attempts = treasureAmount * chestLoot.Count; // prevent infinite loops
-
-                do
-                {
-                    if (chestLoot.Count > 1)
-                    {
-                        do
-                        {
-                            index = UnityEngine.Random.Range(0, chestLoot.Count - 1);
-                            if (!indices.Contains(index))
-                            {
-                                indices.Add(index);
-                                indicer = 100;
-                                break;
-                            }
-                        } while (--indicer > 0);
-                    }
-
-                    int amount = Convert.ToInt32(chestLoot[index].amount);
-
-                    if (amount < 1)
-                        amount = 1;
-
-                    int amountMin = Convert.ToInt32(chestLoot[index].amountMin);
-
-                    if (amountMin > 0 && amountMin < amount)
-                    {
-                        amount = UnityEngine.Random.Range(amountMin, amount);
-                    }
-
-                    var itemDef = ItemManager.FindItemDefinition(chestLoot[index].shortname.ToString());
-
-                    if (itemDef == null)
-                        continue;
-
-                    if (itemDef.stackable == 1 || (itemDef.condition.enabled && itemDef.condition.max > 0f))
-                        amount = 1;
-
-                    ulong skin = Convert.ToUInt64(chestLoot[index].skin);
-                    Item item = ItemManager.CreateByName(itemDef.shortname, amount, skin);
-
-                    if (item == null)
-                        continue;
-
-                    if (item.info.stackable > 1 && !item.hasCondition)
-                    {
-                        item.amount = GetPercentIncreasedAmount(amount);
-                        //Puts("{0}: {1} -> {2}", item.info.shortname, amount, item.amount);
-                    }
-
-                    if (useRandomTreasureSkins && skin == 0)
-                    {
-                        var skins = GetItemSkins(item.info);
-
-                        if (skins.Count > 0)
-                        {
-                            skin = skins.GetRandom();
-                            item.skin = skin;
-                        }
-                    }
-
-                    if (skin != 0 && item.GetHeldEntity())
-                        item.GetHeldEntity().skinID = skin;
-
-                    item.MarkDirty();
-                    item.MoveToContainer(container.inventory, -1, true);
-                } while (container.inventory.itemList.Count < treasureAmount && --attempts > 0);
-            }
-
-            container.enableSaving = false;
-            BaseEntity.saveList.Remove(container);
 
             uint uid = container.net.ID;
-            float unlockTime = UnityEngine.Random.Range(unlockTimeMin, unlockTimeMax);
+            float unlockTime = UnityEngine.Random.Range(_config.Unlock.MinTime, _config.Unlock.MaxTime);
 
             SubscribeHooks(true);
-            treasureChests.Add(uid, treasureChest);
-            treasureChest.SetUnlockTime(unlockTime);
+            treasureChests.Add(uid, chest);
+            chest.SetUnlockTime(unlockTime);
 
             var posStr = FormatGridReference(container.transform.position);
             ins.Puts("{0}: {1}", posStr, string.Join(", ", container.inventory.itemList.Select(item => string.Format("{0} ({1})", item.info.displayName.translated, item.amount)).ToArray()));
@@ -2294,120 +2614,230 @@ namespace Oxide.Plugins
             {
                 double distance = Math.Round(Vector3.Distance(target.transform.position, container.transform.position), 2);
                 string unlockStr = FormatTime(unlockTime, target.UserIDString);
-                string message = msg(szEventOpened, target.UserIDString, posStr, unlockStr, distance, szDistanceChatCommand);
+                string message = msg("pOpened", target.UserIDString, posStr, unlockStr, distance, _config.Settings.DistanceChatCommand);
 
-                if (showOpened)
+                if (_config.EventMessages.Opened)
                 {
                     Message(target, message);
                 }
 
-                if (useGUIAnnouncements && GUIAnnouncements != null && distance <= guiDrawDistance)
+                if (_config.GUIAnnouncement.Enabled && GUIAnnouncements != null && distance <= _config.GUIAnnouncement.Distance)
                 {
-                    GUIAnnouncements?.Call("CreateAnnouncement", message, guiTintColor, guiTextColor, target);
+                    GUIAnnouncements?.Call("CreateAnnouncement", message, _config.GUIAnnouncement.TintColor, _config.GUIAnnouncement.TextColor, target);
                 }
 
-                if (useRocketOpener && showBarrage)
-                    Message(target, msg(szEventBarrage, target.UserIDString, numRockets));
+                if (useRockets && _config.EventMessages.Barrage)
+                    Message(target, msg("pBarrage", target.UserIDString, _config.Rocket.Amount));
 
-                if (drawTreasureIfNearby && autoDrawDistance > 0f && distance <= autoDrawDistance)
-                    DrawText(target, container.transform.position, msg(szTreasureChest, target.UserIDString, distance));
+                if (_config.Event.DrawTreasureIfNearby && _config.Event.AutoDrawDistance > 0f && distance <= _config.Event.AutoDrawDistance)
+                    DrawText(target, container.transform.position, msg("Treasure Chest", target.UserIDString, distance));
             }
 
             var position = container.transform.position;
             storedData.TotalEvents++;
             SaveData();
 
-            if (useLustyMap)
+            if (_config.LustyMap.Enabled)
                 AddLustyMarker(position, uid);
 
             if (Map)
                 AddMapMarker(position, uid);
 
-            timer.Once(unlockTime + destructTime, () => RemoveMapMarker(uid));
-            timer.Once(unlockTime + destructTime, () => RemoveLustyMarker(uid));
-
             string monumentName = null;
 
-            foreach(var monument in monuments)
+            foreach (var x in monuments)
             {
-                if (Vector3.Distance(monument.transform.position, position) <= 75f)
+                if (Vector3.Distance(x.Value.Position, position) <= 75f)
                 {
-                    monumentName = monument.displayPhrase.translated;
+                    monumentName = x.Key;
                     break;
                 }
             }
 
+            chest.Invoke(chest.SpawnNpcs, 1f);
+
             if (!string.IsNullOrEmpty(monumentName))
             {
-                foreach(var bm in blacklistedNPCMonuments)
+                foreach (var value in _config.NPC.BlacklistedMonuments)
                 {
-                    if (monumentName.ToLower().Trim() == bm.ToLower().Trim())
+                    if (monumentName.ToLower().Trim() == value.ToLower().Trim())
                     {
-                        return position;
+                        return chest;
                     }
                 }
             }
 
-            treasureChest.SpawnNpcs();
-
-            return position;
+            return chest;
         }
 
-        // Facepunch.RandomUsernames
+        private void API_SetContainer(StorageContainer container, float radius, bool spawnNpcs) // Expansion Mode for Raidable Bases plugin
+        {
+            if (!container.IsValid())
+            {
+                return;
+            }
+
+            container.SetFlag(BaseEntity.Flags.Locked, true);
+            container.SetFlag(BaseEntity.Flags.OnFire, true);
+
+            var chest = container.gameObject.AddComponent<TreasureChest>();
+            float unlockTime = UnityEngine.Random.Range(_config.Unlock.MinTime, _config.Unlock.MaxTime);
+
+            chest.Radius = radius;
+            treasureChests.Add(container.net.ID, chest);
+            chest.SetUnlockTime(unlockTime);
+            storedData.TotalEvents++;
+            SaveData();
+            
+            Subscribe(nameof(OnEntityTakeDamage));
+            Subscribe(nameof(OnItemRemovedFromContainer));
+            Subscribe(nameof(OnLootEntity));
+
+            if (spawnNpcs)
+            {
+                Subscribe(nameof(CanBeTargeted));
+                Subscribe(nameof(OnEntitySpawned));
+                Subscribe(nameof(OnPlayerDeath));
+                Subscribe(nameof(OnNpcTarget));
+                Subscribe(nameof(CanBradleyApcTarget));
+                chest.Invoke(chest.SpawnNpcs, 1f);
+            }
+        }
+
+        char[] chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".ToCharArray();
+        readonly StringBuilder _sb = new StringBuilder();
+
+        string RandomString(int min = 5, int max = 10)
+        {
+            _sb.Length = 0;
+
+            for (int i = 0; i <= UnityEngine.Random.Range(min, max); i++)
+                _sb.Append(chars[UnityEngine.Random.Range(0, chars.Length)]);
+
+            return _sb.ToString();
+        }
+
+        float GetMonumentFloat(string monumentName)
+        {
+            string name = (monumentName.Contains(":") ? monumentName.Substring(0, monumentName.LastIndexOf(":")) : monumentName).TrimEnd();
+
+            switch (name)
+            {
+                case "Abandoned Cabins":
+                    return 24f + 30f;
+                case "Abandoned Supermarket":
+                    return 50f;
+                case "Airfield":
+                    return 200f;
+                case "Bandit Camp":
+                    return 100f + 25f;
+                case "Cave":
+                    return 75f;
+                case "Giant Excavator Pit":
+                    return 200f + 25f;
+                case "Harbor":
+                    return 100f + 50f;
+                case "HQM Quarry":
+                    return 27.5f + 10f;
+                case "Large Oil Rig":
+                    return 200f;
+                case "Launch Site":
+                    return 200f + 100f;
+                case "Lighthouse":
+                    return 24f + 24f;
+                case "Military Tunnel":
+                    return 100f;
+                case "Mining Outpost":
+                    return 25f + 15f;
+                case "Oil Rig":
+                    return 100f;
+                case "Outpost":
+                    return 100f + 25f;
+                case "Oxum's Gas Station":
+                    return 50f + 15f;
+                case "Power Plant":
+                    return 100f + 40f;
+                case "power_sub_small_1":
+                case "power_sub_small_2":
+                case "power_sub_big_1":
+                case "power_sub_big_2":
+                    return 30f;
+                case "Satellite Dish":
+                    return 75f + 15f;
+                case "Sewer Branch":
+                    return 75f + 25f;
+                case "Stone Quarry":
+                    return 27.5f;
+                case "Sulfur Quarry":
+                    return 27.5f;
+                case "The Dome":
+                    return 50f + 20f;
+                case "Train Yard":
+                    return 100 + 50f;
+                case "Water Treatment Plant":
+                    return 100f + 85f;
+                case "Water Well":
+                    return 24f;
+                case "Wild Swamp":
+                    return 24f;
+            }
+
+            return 200f;
+        }
+
         public static string Get(ulong v) //credit Fujikura.
         {
-            return Facepunch.RandomUsernames.Get((int)(v % 2147483647uL));
+            return Facepunch.RandomUsernames.Get(v % 2147483647uL);
         }
-        
+
         void CheckSecondsUntilEvent()
         {
-            eventTimer = timer.Once(1f, () => CheckSecondsUntilEvent());
-
-            var eventInterval = UnityEngine.Random.Range(eventIntervalMin, eventIntervalMax);
-            float stamp = Time.realtimeSinceStartup;
+            var eventInterval = UnityEngine.Random.Range(_config.Event.IntervalMin, _config.Event.IntervalMax);
+            float stamp = Facepunch.Math.Epoch.Current;
 
             if (storedData.SecondsUntilEvent == double.MinValue) // first time users
             {
                 storedData.SecondsUntilEvent = stamp + eventInterval;
-                Puts(rf(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
-                Puts(rf(szFirstTimeUse));
+                Puts(_("Next Automated Event", null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
+                //Puts(_("View Config"));
                 SaveData();
-                return;                
             }
 
-            if (storedData.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < maxEvents)
+            if (storedData.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < _config.Event.Max && _config.Event.Automated)
             {
-                if (BasePlayer.activePlayerList.Count >= playerLimit)
+                if (BasePlayer.activePlayerList.Count >= _config.Event.PlayerLimit)
                 {
                     for (int retry = 0; retry < 3; retry++) // for servers with high entity counts
                     {
-                        if (treasureChests.Count >= maxEvents || GetNewEvent() != Vector3.zero)
+                        if (treasureChests.Count >= _config.Event.Max || TryOpenEvent() != null)
                         {
                             break;
                         }
                     }
 
                     storedData.SecondsUntilEvent = stamp + eventInterval;
-                    Puts(rf(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
+                    Puts(_("Next Automated Event", null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
                     SaveData();
                 }
             }
+
+            eventTimer = timer.Once(1f, () => CheckSecondsUntilEvent());
         }
 
         public static string FormatGridReference(Vector3 position) // Credit: Jake_Rich. Fix by trixxxi (y,x -> x,y switch)
         {
             string monumentName = null;
 
-            foreach(var monument in monuments)  // request MrSmallZzy
+            foreach (var x in monuments)  // request MrSmallZzy
             {
-                if (Vector3.Distance(monument.transform.position, position) <= 75f)
+                if ((x.Value.Position - position).magnitude <= x.Value.Radius)
                 {
-                    monumentName = monument.displayPhrase.translated;
+                    monumentName = (x.Key.Contains(":") ? x.Key.Substring(0, x.Key.LastIndexOf(":")) : x.Key).TrimEnd();
                     break;
                 }
             }
 
-            if (showXZ)
+            if (_config.Settings.ShowXZ)
             {
                 string pos = string.Format("{0} {1}", position.x.ToString("N2"), position.z.ToString("N2"));
                 return string.IsNullOrEmpty(monumentName) ? pos : $"{monumentName} ({pos})";
@@ -2438,31 +2868,15 @@ namespace Oxide.Plugins
         {
             if (seconds == 0)
             {
-                if (BasePlayer.activePlayerList.Count < playerLimit)
-                    return msg(szNotEnough, null, playerLimit);
+                if (BasePlayer.activePlayerList.Count < _config.Event.PlayerLimit)
+                    return msg("Not Enough Online", null, _config.Event.PlayerLimit);
                 else
-                    return string.Format("0 {0}", msg(szTimeSeconds, id));
+                    return "0s";
             }
 
             var ts = TimeSpan.FromSeconds(seconds);
-            var format = new List<string>();
 
-            if (ts.Days > 0)
-                format.Add(string.Format("{0} {1}", ts.Days, msg(ts.Days <= 1 ? szTimeDay : szTimeDays, id)));
-
-            if (ts.Hours > 0)
-                format.Add(string.Format("{0} {1}", ts.Hours, msg(ts.Hours <= 1 ? szTimeHour : szTimeHours, id)));
-
-            if (ts.Minutes > 0)
-                format.Add(string.Format("{0} {1}", ts.Minutes, msg(ts.Minutes <= 1 ? szTimeMinute : szTimeMinutes, id)));
-
-            if (ts.Seconds > 0)
-                format.Add(string.Format("{0} {1}", ts.Seconds, msg(ts.Seconds <= 1 ? szTimeSecond : szTimeSeconds, id)));
-
-            if (format.Count > 1)
-                format[format.Count - 1] = msg(szTimeAnd, id, format[format.Count - 1]);
-
-            return string.Join(", ", format.ToArray());
+            return string.Format("{0:D2}h {1:D2}m {2:D2}s", ts.Hours, ts.Minutes, ts.Seconds);
         }
 
         bool AssignTreasureHunters(List<KeyValuePair<string, int>> ladder)
@@ -2472,19 +2886,22 @@ namespace Oxide.Plugins
                 if (target == null || string.IsNullOrEmpty(target.Id))
                     continue;
 
-                if (permission.UserHasPermission(target.Id, ladderPerm))
-                    permission.RevokeUserPermission(target.Id, ladderPerm);
+                if (permission.UserHasPermission(target.Id, _config.RankedLadder.Permission))
+                    permission.RevokeUserPermission(target.Id, _config.RankedLadder.Permission);
 
-                if (permission.UserHasGroup(target.Id, ladderGroup))
-                    permission.RemoveUserGroup(target.Id, ladderGroup);
+                if (permission.UserHasGroup(target.Id, _config.RankedLadder.Group))
+                    permission.RemoveUserGroup(target.Id, _config.RankedLadder.Group);
             }
 
-            if (!recordStats)
+            if (!_config.RankedLadder.Enabled)
                 return true;
 
             foreach (var entry in ladder.ToList())
                 if (entry.Value < 1)
                     ladder.Remove(entry);
+
+            if (ladder.Count == 0)
+                return true;
 
             ladder.Sort((x, y) => y.Value.CompareTo(x.Value));
 
@@ -2497,20 +2914,20 @@ namespace Oxide.Plugins
                 if (target == null || target.IsBanned || target.IsAdmin)
                     continue;
 
-                permission.GrantUserPermission(target.Id, ladderPerm.ToLower(), this);
-                permission.AddUserGroup(target.Id, ladderGroup.ToLower());
+                permission.GrantUserPermission(target.Id, _config.RankedLadder.Permission, this);
+                permission.AddUserGroup(target.Id, _config.RankedLadder.Group);
 
-                LogToFile("treasurehunters", DateTime.Now.ToString() + " : " + msg(szLogStolen, null, target.Name, target.Id, ladder[i].Value), this, true);
-                Puts(rf(szLogGranted, null, target.Name, target.Id, ladderPerm, ladderGroup));
+                LogToFile("treasurehunters", DateTime.Now.ToString() + " : " + msg("Log Stolen", null, target.Name, target.Id, ladder[i].Value), this, true);
+                Puts(_("Log Granted", null, target.Name, target.Id, _config.RankedLadder.Permission, _config.RankedLadder.Group));
 
-                if (++permsGiven >= permsToGive)
+                if (++permsGiven >= _config.RankedLadder.Amount)
                     break;
             }
 
             if (permsGiven > 0)
             {
                 string file = string.Format("{0}{1}{2}_{3}-{4}.txt", Interface.Oxide.LogDirectory, System.IO.Path.DirectorySeparatorChar, Name.Replace(" ", "").ToLower(), "treasurehunters", DateTime.Now.ToString("yyyy-MM-dd"));
-                Puts(rf(szLogSaved, null, file));
+                Puts(_("Log Saved", null, file));
             }
 
             return true;
@@ -2518,8 +2935,8 @@ namespace Oxide.Plugins
 
         void AddMapMarker(Vector3 position, uint uid)
         {
-            mapMarkers[uid] = new MapInfo { IconName = lustyMapIconName, Position = position, Url = lustyMapIconFile };
-            Map?.Call("ApiAddPointUrl", lustyMapIconFile, lustyMapIconName, position);
+            mapMarkers[uid] = new MapInfo { IconName = _config.LustyMap.IconName, Position = position, Url = _config.LustyMap.IconFile };
+            Map?.Call("ApiAddPointUrl", _config.LustyMap.IconFile, _config.LustyMap.IconName, position);
             storedData.Markers.Add(uid);
         }
 
@@ -2529,6 +2946,7 @@ namespace Oxide.Plugins
                 return;
 
             var mapInfo = mapMarkers[uid];
+
             Map?.Call("ApiRemovePointUrl", mapInfo.Url, mapInfo.IconName, mapInfo.Position);
             mapMarkers.Remove(uid);
             storedData.Markers.Remove(uid);
@@ -2536,9 +2954,9 @@ namespace Oxide.Plugins
 
         void AddLustyMarker(Vector3 pos, uint uid)
         {
-            string name = string.Format("{0}_{1}", lustyMapIconName, storedData.TotalEvents).ToLower();
+            string name = string.Format("{0}_{1}", _config.LustyMap.IconName, storedData.TotalEvents).ToLower();
 
-            LustyMap?.Call("AddTemporaryMarker", pos.x, pos.z, name, lustyMapIconFile, lustyMapRotation);
+            LustyMap?.Call("AddTemporaryMarker", pos.x, pos.z, name, _config.LustyMap.IconFile, _config.LustyMap.IconRotation);
             lustyMarkers[uid] = name;
             storedData.Markers.Add(uid);
         }
@@ -2562,7 +2980,7 @@ namespace Oxide.Plugins
             {
                 foreach (uint marker in storedData.Markers)
                 {
-                    LustyMap?.Call("RemoveMarker", marker.ToString());
+                    LustyMap.Call("RemoveMarker", marker.ToString());
                 }
             }
 
@@ -2584,7 +3002,7 @@ namespace Oxide.Plugins
 
             for (int i = 0; i < storedData.TotalEvents + 1; i++)
             {
-                string name = string.Format("{0}_{1}", lustyMapIconName, i).ToLower();
+                string name = string.Format("{0}_{1}", _config.LustyMap.IconName, i).ToLower();
 
                 if ((bool)(LustyMap?.Call("RemoveMarker", name) ?? false))
                 {
@@ -2604,21 +3022,21 @@ namespace Oxide.Plugins
 
         void DrawText(BasePlayer player, Vector3 drawPos, string text)
         {
-            if (!player || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || drawTime < 1f)
+            if (!player || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || _config.Event.DrawTime < 1f)
                 return;
 
             bool isAdmin = player.IsAdmin;
 
             try
             {
-                if (grantDraw && !player.IsAdmin)
+                if (_config.Event.GrantDraw && !player.IsAdmin)
                 {
                     var uid = player.userID;
 
                     if (!drawGrants.Contains(uid))
                     {
                         drawGrants.Add(uid);
-                        timer.Once(drawTime, () => drawGrants.Remove(uid));
+                        timer.Once(_config.Event.DrawTime, () => drawGrants.Remove(uid));
                     }
 
                     player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
@@ -2626,11 +3044,11 @@ namespace Oxide.Plugins
                 }
 
                 if (player.IsAdmin || drawGrants.Contains(player.userID))
-                    player.SendConsoleCommand("ddraw.text", drawTime, Color.yellow, drawPos, text);
+                    player.SendConsoleCommand("ddraw.text", _config.Event.DrawTime, Color.yellow, drawPos, text);
             }
             catch (Exception ex)
             {
-                grantDraw = false;
+                _config.Event.GrantDraw = false;
                 Puts("DrawText Exception: {0} --- {1}", ex.Message, ex.StackTrace);
                 Puts("Disabled drawing for players!");
             }
@@ -2644,15 +3062,15 @@ namespace Oxide.Plugins
                 }
             }
         }
-        
+
         public static bool IsValidSpawn(BaseNetworkable e)
         {
             var entity = e as BaseEntity;
 
-            if (!entity || entity.OwnerID.IsSteamId())
+            if (!entity.IsValid() || entity.OwnerID.IsSteamId())
                 return false;
 
-            if (e.GetComponentInParent<BasePlayer>() && !e.GetComponentInParent<NPCPlayer>())
+            if (e.GetComponentInParent<BasePlayer>() && !entity.IsNpc)
                 return false;
 
             return !(e is AutoTurret) && !(e is Door) && !(e is ResourceEntity);
@@ -2667,7 +3085,7 @@ namespace Oxide.Plugins
 
                 if (itemDef == null)
                 {
-                    Message(player, msg("InvalidItem", player.UserIDString, shortname, szDistanceChatCommand));
+                    Message(player, msg("InvalidItem", player.UserIDString, shortname, _config.Settings.DistanceChatCommand));
                     return;
                 }
 
@@ -2677,12 +3095,12 @@ namespace Oxide.Plugins
                     if (itemDef.stackable == 1 || (itemDef.condition.enabled && itemDef.condition.max > 0f) || amount < 1)
                         amount = 1;
 
-                    float skin = 0uL;
+                    ulong skin = 0uL;
 
                     if (args.Length >= 3)
                     {
-                        float num;
-                        if (float.TryParse(args[2], out num))
+                        ulong num;
+                        if (ulong.TryParse(args[2], out num))
                             skin = num;
                         else
                             Message(player, msg("InvalidValue", player.UserIDString, args[2]));
@@ -2698,14 +3116,18 @@ namespace Oxide.Plugins
                             Message(player, msg("InvalidValue", player.UserIDString, args[3]));
                     }
 
-                    chestLoot.RemoveAll(entry => entry.shortname.ToString() == shortname);
-                    chestLoot.Add(new TreasureItem() { amount = amount, shortname = shortname, skin = skin, amountMin = minAmount });
+                    foreach (var loot in chestLoot)
+                    {
+                        if (loot.shortname.ToString() == shortname)
+                        {
+                            loot.amount = amount;
+                            loot.skin = skin;
+                            loot.amountMin = minAmount;
+                        }
+                    }
 
-                    var newLoot = new List<object>();
-                    newLoot.AddRange(chestLoot.Cast<object>());
-
-                    Config["Treasure", "Loot"] = newLoot;
-                    Config.Save();
+                    _config.Treasure.Loot = chestLoot;
+                    SaveConfig();
                     Message(player, msg("AddedItem", player.UserIDString, shortname, amount, skin));
                 }
                 else
@@ -2714,7 +3136,7 @@ namespace Oxide.Plugins
                 return;
             }
 
-            Message(player, msg("InvalidItem", player.UserIDString, args.Length >= 1 ? args[0] : "?", szDistanceChatCommand));
+            Message(player, msg("InvalidItem", player.UserIDString, args.Length >= 1 ? args[0] : "?", _config.Settings.DistanceChatCommand));
         }
 
         void cmdTreasureHunter(BasePlayer player, string command, string[] args)
@@ -2722,11 +3144,11 @@ namespace Oxide.Plugins
             if (drawGrants.Contains(player.userID))
                 return;
 
-            if (args.Length >= 1 && (args[0].ToLower() == "ladder" || args[0].ToLower() == "lifetime") && recordStats)
+            if (args.Length >= 1 && (args[0].ToLower() == "ladder" || args[0].ToLower() == "lifetime") && _config.RankedLadder.Enabled)
             {
                 if (storedData.Players.Count == 0)
                 {
-                    Message(player, msg(szLadderInsufficient, player.UserIDString));
+                    Message(player, msg("Ladder Insufficient Players", player.UserIDString));
                     return;
                 }
 
@@ -2738,7 +3160,7 @@ namespace Oxide.Plugins
                 var ladder = storedData.Players.ToDictionary(k => k.Key, v => args[0].ToLower() == "ladder" ? v.Value.StolenChestsSeed : v.Value.StolenChestsTotal).Where(kvp => kvp.Value > 0).ToList<KeyValuePair<string, int>>();
                 ladder.Sort((x, y) => y.Value.CompareTo(x.Value));
 
-                Message(player, msg(args[0].ToLower() == "ladder" ? szLadder : szLadderTotal, player.UserIDString));
+                Message(player, msg(args[0].ToLower() == "ladder" ? "Ladder" : "Ladder Total", player.UserIDString));
 
                 foreach (var kvp in ladder)
                 {
@@ -2754,8 +3176,8 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (recordStats)
-                Message(player, msg(szEventWins, player.UserIDString, storedData.Players.ContainsKey(player.UserIDString) ? storedData.Players[player.UserIDString].StolenChestsSeed : 0, szDistanceChatCommand));
+            if (_config.RankedLadder.Enabled)
+                Message(player, msg("pWins", player.UserIDString, storedData.Players.ContainsKey(player.UserIDString) ? storedData.Players[player.UserIDString].StolenChestsSeed : 0, _config.Settings.DistanceChatCommand));
 
             if (args.Length >= 1 && player.IsAdmin)
             {
@@ -2802,12 +3224,12 @@ namespace Oxide.Plugins
 
             if (treasureChests.Count == 0)
             {
-                double time = storedData.SecondsUntilEvent - Time.realtimeSinceStartup;
+                double time = storedData.SecondsUntilEvent - Facepunch.Math.Epoch.Current;
 
                 if (time < 0)
                     time = 0;
 
-                Message(player, msg(szEventNext, player.UserIDString, FormatTime(time, player.UserIDString)));
+                Message(player, msg("pNext", player.UserIDString, FormatTime(time, player.UserIDString)));
                 return;
             }
 
@@ -2816,8 +3238,8 @@ namespace Oxide.Plugins
                 double distance = Math.Round(Vector3.Distance(player.transform.position, chest.Value.containerPos), 2);
                 string posStr = FormatGridReference(chest.Value.containerPos);
 
-                Message(player, chest.Value.GetUnlockTime() != null ? msg("pInfo", player.UserIDString, chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, szDistanceChatCommand) : msg("pAlready", player.UserIDString, posStr, distance, szDistanceChatCommand));
-                DrawText(player, chest.Value.containerPos, msg(szTreasureChest, player.UserIDString, distance));
+                Message(player, chest.Value.GetUnlockTime() != null ? msg("pInfo", player.UserIDString, chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, _config.Settings.DistanceChatCommand) : msg("pAlready", player.UserIDString, posStr, distance, _config.Settings.DistanceChatCommand));
+                if (_config.Settings.AllowDrawText) DrawText(player, chest.Value.containerPos, msg("Treasure Chest", player.UserIDString, distance));
             }
         }
 
@@ -2825,20 +3247,26 @@ namespace Oxide.Plugins
         {
             var player = arg.Player();
 
-            if (!(player?.IPlayer.HasPermission(permName) ?? arg.IsAdmin))
+            if (!(player?.IPlayer?.HasPermission(_config.Settings.PermName) ?? arg.IsAdmin))
             {
-                arg.ReplyWith(msg(szNoPermission, player?.UserIDString ?? null));
+                arg.ReplyWith(msg("No Permission", player?.UserIDString ?? null));
                 return;
             }
 
-            if (arg.HasArgs() && arg.Args.Length == 1 && arg.Args[0].ToLower() == "help")
+            if (arg.HasArgs() && arg.Args.Length == 1)
             {
-                if (arg.IsRcon || arg.IsServerside)
+                if (arg.Args[0].ToLower() == "help")
                 {
-                    Puts("Monuments:");
-                    foreach (var m in monuments) Puts(m.displayPhrase.english);
+                    if (arg.IsRcon || arg.IsServerside)
+                    {
+                        Puts("Monuments:");
+                        foreach (var m in monuments) Puts(m.Key);
+                    }
+
+                    arg.ReplyWith(msg("Help", player?.UserIDString ?? null, _config.Settings.EventChatCommand));
                 }
-                arg.ReplyWith(msg(szHelp, player?.UserIDString ?? null, szEventChatCommand));
+                else if (arg.Args[0].ToLower() == "5") storedData.SecondsUntilEvent = Facepunch.Math.Epoch.Current + 5f;
+
                 return;
             }
 
@@ -2853,17 +3281,17 @@ namespace Oxide.Plugins
 
             for (int i = 0; i < amount; i++)
             {
-                if (treasureChests.Count >= maxEvents)
+                if (treasureChests.Count >= _config.Event.Max)
                 {
-                    arg.ReplyWith(msg(szMaxManualEvents, player?.UserIDString ?? null, maxEvents));
+                    arg.ReplyWith(msg("Max Manual Events", player?.UserIDString ?? null, _config.Event.Max));
                     break;
                 }
 
-                var eventPos = GetNewEvent();
+                var chest = TryOpenEvent();
 
-                if (eventPos != Vector3.zero)
+                if (chest != null)
                 {
-                    position = eventPos;
+                    position = chest.containerPos;
                     num++;
                 }
             }
@@ -2878,9 +3306,9 @@ namespace Oxide.Plugins
             else
             {
                 if (position == Vector3.zero)
-                    arg.ReplyWith(msg(szEventFail, player?.UserIDString ?? null));
+                    arg.ReplyWith(msg("Manual Event Failed", player?.UserIDString ?? null));
                 else
-                    ins.Puts(ins.rf(szInvalidConstant, null, boxPrefab));
+                    ins.Puts(_("Invalid Constant", null, boxPrefab + " : Command()"));
             }
 
             if (num > 1)
@@ -2891,475 +3319,202 @@ namespace Oxide.Plugins
 
         void cmdDangerousTreasures(BasePlayer player, string command, string[] args)
         {
-            if (!permission.UserHasPermission(player.UserIDString, permName) && !player.IsAdmin)
+            if (!permission.UserHasPermission(player.UserIDString, _config.Settings.PermName) && !player.IsAdmin)
             {
-                Message(player, msg(szNoPermission, player.UserIDString));
+                Message(player, msg("No Permission", player.UserIDString));
                 return;
             }
 
             if (args.Length == 1)
             {
-                if (args[0].ToLower() == "help")
-                {                    
-                    Message(player, "Monuments: " + string.Join(", ", monuments.Select(m => m.displayPhrase.english)));
-                    Message(player, msg(szHelp, player.UserIDString, szEventChatCommand));
+                var arg = args[0].ToLower();
+
+                if (arg == "help")
+                {
+                    Message(player, "Monuments: " + string.Join(", ", monuments.Select(m => m.Key)));
+                    Message(player, msg("Help", player.UserIDString, _config.Settings.EventChatCommand));
                     return;
                 }
-                else if (args[0].ToLower() == "custom" && player.IsAdmin)
+                else if (player.IsAdmin)
                 {
-                    if (string.IsNullOrEmpty(storedData.CustomPosition))
+                    if (arg == "custom")
                     {
-                        storedData.CustomPosition = player.transform.position.ToString();
-                        sd_customPos = player.transform.position;
-                        Message(player, msg("CustomPositionSet", player.UserIDString, storedData.CustomPosition));
+                        if (string.IsNullOrEmpty(storedData.CustomPosition))
+                        {
+                            storedData.CustomPosition = player.transform.position.ToString();
+                            sd_customPos = player.transform.position;
+                            Message(player, msg("CustomPositionSet", player.UserIDString, storedData.CustomPosition));
+                        }
+                        else
+                        {
+                            storedData.CustomPosition = "";
+                            sd_customPos = Vector3.zero;
+                            Message(player, msg("CustomPositionRemoved", player.UserIDString));
+                        }
+                        SaveData();
+                        return;
                     }
-                    else
-                    {
-                        storedData.CustomPosition = "";
-                        sd_customPos = Vector3.zero;
-                        Message(player, msg("CustomPositionRemoved", player.UserIDString));
-                    }
-                    SaveData();
-                    return;
                 }
             }
 
-            if (treasureChests.Count >= maxEvents)
+            if (treasureChests.Count >= _config.Event.Max)
             {
-                Message(player, msg(szMaxManualEvents, player.UserIDString, maxEvents));
+                Message(player, msg("Max Manual Events", player.UserIDString, _config.Event.Max));
                 return;
             }
 
-            var position = TryOpenEvent(args.Length == 1 && args[0] == "me" && player.IsAdmin ? player : null);
-            if (position != Vector3.zero)
+            var chest = TryOpenEvent(args.Length == 1 && args[0] == "me" && player.IsAdmin ? player : null);
+            if (chest != null)
             {
                 if (args.Length == 1 && args[0].ToLower() == "tp" && player.IsAdmin)
                 {
-                    player.Teleport(position);
+                    player.Teleport(chest.containerPos);
                 }
             }
             else
             {
-                Message(player, msg(szEventFail, player.UserIDString));
+                Message(player, msg("Manual Event Failed", player.UserIDString));
             }
         }
 
         #region Config
-        const string szEventInfo = "pInfo";
-        const string szEventStartedInfo = "pAlready";
-        const string szEventStarted = "pStarted";
-        const string szEventOpened = "pOpened";
-        const string szEventBarrage = "pBarrage";
-        const string szEventNext = "pNext";
-        const string szEventThief = "pThief";
-        const string szEventWins = "pWins";
-        const string szLadder = "Ladder";
-        const string szLadderTotal = "Ladder Total";
-        const string szLadderInsufficient = "Ladder Insufficient Players";
-        const string szPrefix = "Prefix";
-        const string szTreasureChest = "Treasure Chest";
-        const string szNoPermission = "No Permission";
-        const string szBuildingBlocked = "Building is blocked!";
-        const string szMaxManualEvents = "Max Manual Events";
-        const string szProtected = "Dangerous Zone Protected";
-        const string szUnprotected = "Dangerous Zone Unprotected";
-        const string szEventFail = "Manual Event Failed";
-        const string szHelp = "Help";
-        const string szEventAt = "Event At";
-        const string szAutomated = "Next Automated Event";
-        const string szNotEnough = "Not Enough Online";
-        const string szInvalidConstant = "Invalid Constant";
-        const string szDestroyed = "Destroyed Treasure Chest";
-        const string szIndestructible = "Indestructible";
-        const string szFirstTimeUse = "View Config";
-        const string szNewmanEnter = "Newman Enter";
-        const string szNewmanTraitor = "Newman Traitor";
-        const string szNewmanTraitorBurn = "Newman Traitor Burn";
-        const string szNewmanProtected = "Newman Protected";
-        const string szNewmanProtect = "Newman Protect";
-        const string szNewmanProtectFade = "Newman Protect Fade";
-        const string szLogStolen = "Log Stolen";
-        const string szLogGranted = "Log Granted";
-        const string szLogSaved = "Log Saved";
-        const string szTimeDay = "TimeDay";
-        const string szTimeDays = "TimeDays";
-        const string szTimeHour = "TimeHour";
-        const string szTimeHours = "TimeHours";
-        const string szTimeMinute = "TimeMinute";
-        const string szTimeMinutes = "TimeMinutes";
-        const string szTimeSecond = "TimeSecond";
-        const string szTimeSeconds = "TimeSeconds";
-        const string szTimeAnd = "TimeAndFormat";
-        const string szEventCountdown = "pCountdown";
-        const string szInvalidEntry = "InvalidEntry";
-        const string szInvalidKey = "InvalidKey";
-        const string szInvalidValue = "InvalidValue";
-        const string szUnloading = "Unloading";
-        const string szRestartDetected = "RestartDetected";
-        const string szDestroyingTreasure = "pDestroyingTreasure";
-        const string szEconomicsDeposit = "EconomicsDeposit";
-        const string szRewardPoints = "ServerRewardPoints";
-
-        bool Changed;
-        static List<string> murdererItems = new List<string>();
-        List<string> blacklistedNPCMonuments = new List<string>();
-        List<string> blacklistedMonuments = new List<string>();
-        List<MonumentInfo> allowedMonuments = new List<MonumentInfo>();
-        List<TreasureItem> chestLoot = new List<TreasureItem>();
-        bool showPrefix;
-        static bool useRocketOpener;
-        static bool useFireRockets;
-        static int numRockets;
-        static float rocketSpeed;
-        static bool useFireballs;
-        static float fbDamagePerSecond;
-        static float fbLifeTimeMin;
-        static float fbLifeTimeMax;
-        static float fbRadius;
-        static float fbTickRate;
-        static float fbGeneration;
-        static int fbWaterToExtinguish;
-        static int secondsBeforeTick;
-        static int maxEvents;
-        static int treasureAmount;
-        static float unlockTimeMin;
-        static float unlockTimeMax;
-        static bool automatedEvents;
-        static float eventIntervalMin;
-        static float eventIntervalMax;
-        static Timer eventTimer;
-        static bool useSpheres;
-        static bool useRandomBoxSkin;
-        static ulong presetSkin;
-        static bool includeWorkshopBox;
-        string permName;
-        string szEventChatCommand;
-        static string szDistanceChatCommand;
-        string szEventConsoleCommand;
-        bool grantDraw;
-        static float drawTime;
-        static bool showStarted;
-        bool showOpened;
-        bool showBarrage;
-        int playerLimit;
-        static bool newmanMode;
-        static bool newmanProtect;
-        static float destructTime;
-        static bool launchMissiles;
-        static bool targetChest;
-        static float missileFrequency;
-        static float targettingTime;
-        static float timeUntilExplode;
-        static bool ignoreFlying;
-        static bool recordStats;
-        static string ladderPerm;
-        static string ladderGroup;
-        static int permsToGive;
-        bool useLustyMap;
-        string lustyMapIconName;
-        string lustyMapIconFile;
-        float lustyMapRotation;
-        static bool useCountdown;
-        static List<int> countdownTimes = new List<int>();
-        static float eventRadius;
-        bool useRandomTreasureSkins;
-        bool includeWorkshopTreasure;
-        static bool useUnclaimedAnnouncements;
-        static float unclaimedInterval;
-        bool drawTreasureIfNearby;
-        float autoDrawDistance;
-        static int amountOfSpheres;
-        bool pctIncreasesDayLoot;
-        bool usingDayOfWeekLoot;
-        Dictionary<DayOfWeek, decimal> pctIncreases = new Dictionary<DayOfWeek, decimal>();
-        static float missileDetectionDistance;
-        bool useEconomics;
-        bool useServerRewards;
-        double economicsMoney;
-        double serverRewardsPoints;
-        decimal percentLoss;
-        bool useGUIAnnouncements;
-        string guiTintColor;
-        string guiTextColor;
-        float guiDrawDistance;
-        static float rocketDamageAmount;
-        static bool spawnNpcs;
-        static bool spawnNpcsMurderers;
-        static bool spawnScientistsOnly;
-        static bool spawnNpcsBoth;
-        static int spawnNpcsAmount;
-        static int spawnNpcsMinAmount;
-        static bool spawnsDespawnInventory;
-        static bool showXZ;
-        static bool spawnNpcsRandomAmount;
-        bool onlyMonuments;
-        float allowMonumentChance;
-        static bool undergroundLoot;
-        bool truePVEAllowPVPAtEvents;
-        bool truePVEAllowBuildingDamageAtEvents;
-        bool truePVEServerWidePVP;
-        static bool showFirstEntered;
-        static bool showDestructMsg;
-        static bool showOpenedMsg;
-        static List<string> randomNames = new List<string>();
-        bool unlockWhenNpcsDie;
-        static bool requireAllNpcsDie;
-
-        List<object> DefaultTimesInSeconds
-        {
-            get
-            {
-                return new List<object> { "120", "60", "30", "15" };
-            }
-        }
-
-        List<object> DefaultMurdererItems
-        {
-            get
-            {
-                return new List<object> { "metal.facemask", "metal.plate.torso", "pants", "tactical.gloves", "boots.frog", "tshirt" };
-            }
-        }
-
-        List<object> DefaultTreasure
-        {
-            get
-            {
-                return new List<object>
-                {
-                    new TreasureItem { shortname = "ammo.pistol", amount = 40, skin = 0, amountMin = 40 },
-                    new TreasureItem { shortname = "ammo.pistol.fire", amount = 40, skin = 0, amountMin = 40 },
-                    new TreasureItem { shortname = "ammo.pistol.hv", amount = 40, skin = 0, amountMin = 40 },
-                    new TreasureItem { shortname = "ammo.rifle", amount = 60, skin = 0, amountMin = 60 },
-                    new TreasureItem { shortname = "ammo.rifle.explosive", amount = 60, skin = 0, amountMin = 60 },
-                    new TreasureItem { shortname = "ammo.rifle.hv", amount = 60, skin = 0, amountMin = 60 },
-                    new TreasureItem { shortname = "ammo.rifle.incendiary", amount = 60, skin = 0, amountMin = 60 },
-                    new TreasureItem { shortname = "ammo.shotgun", amount = 24, skin = 0, amountMin = 24 },
-                    new TreasureItem { shortname = "ammo.shotgun.slug", amount = 40, skin = 0, amountMin = 40 },
-                    new TreasureItem { shortname = "survey.charge", amount = 20, skin = 0, amountMin = 20 },
-                    new TreasureItem { shortname = "metal.refined", amount = 150, skin = 0, amountMin = 150 },
-                    new TreasureItem { shortname = "bucket.helmet", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "cctv.camera", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "coffeecan.helmet", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "explosive.timed", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "metal.facemask", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "metal.plate.torso", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "mining.quarry", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "pistol.m92", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "rifle.ak", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "rifle.bolt", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "rifle.lr300", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "smg.2", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "smg.mp5", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "smg.thomspon", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "supply.signal", amount = 1, skin = 0, amountMin = 1 },
-                    new TreasureItem { shortname = "targeting.computer", amount = 1, skin = 0, amountMin = 1 },
-                };
-            }
-        }
-
-        List<object> DefaultBlacklist
-        {
-            get
-            {
-                return new List<object>
-                {
-                    "Bandit Camp",
-                    "Outpost",
-                    "Junkyard"
-                };
-            }
-        }
-
-        List<object> DefaultNPCBlacklist
-        {
-            get
-            {
-                return new List<object>
-                {
-                    "Bandit Camp",
-                    "Outpost",
-                    "Junkyard"
-                };
-            }
-        }
 
         Dictionary<string, Dictionary<string, string>> GetMessages()
         {
             return new Dictionary<string, Dictionary<string, string>>
             {
-                {szNoPermission, new Dictionary<string, string>() {
+                {"No Permission", new Dictionary<string, string>() {
                     {"en", "You do not have permission to use this command."},
                 }},
-                {szBuildingBlocked, new Dictionary<string, string>() {
+                {"Building is blocked!", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>Building is blocked near treasure chests!</color>"},
                 }},
-                {szMaxManualEvents, new Dictionary<string, string>() {
+                {"Max Manual Events", new Dictionary<string, string>() {
                     {"en", "Maximum number of manual events <color=#FF0000>{0}</color> has been reached!"},
                 }},
-                {szProtected, new Dictionary<string, string>() {
+                {"Dangerous Zone Protected", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>You have entered a dangerous zone protected by a fire aura! You must leave before you die!</color>"},
                 }},
-                {szUnprotected, new Dictionary<string, string>() {
+                {"Dangerous Zone Unprotected", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>You have entered a dangerous zone!</color>"},
                 }},
-                {szEventFail, new Dictionary<string, string>() {
+                {"Manual Event Failed", new Dictionary<string, string>() {
                     {"en", "Event failed to start! Unable to obtain a valid position. Please try again."},
                 }},
-                {szHelp, new Dictionary<string, string>() {
+                {"Help", new Dictionary<string, string>() {
                     {"en", "/{0} <tp> - start a manual event, and teleport to the position if TP argument is specified and you are an admin."},
                 }},
-                {szEventStarted, new Dictionary<string, string>() {
+                {"pStarted", new Dictionary<string, string>() {
                     {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated!</color>"},
                 }},
-                {szEventOpened, new Dictionary<string, string>() {
+                {"pStartedNpcs", new Dictionary<string, string>() {
+                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable.</color>"},
+                }},
+                {"pOpened", new Dictionary<string, string>() {
                     {"en", "An event has opened at <color=#FFFF00>{0}</color>! Event will start in <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away. Use <color=#FFA500>/{3}</color> for help.</color>"},
                 }},
-                {szEventBarrage, new Dictionary<string, string>() {
+                {"pBarrage", new Dictionary<string, string>() {
                     {"en", "A barrage of <color=#FFFF00>{0}</color> rockets can be heard at the location of the event!</color>"},
                 }},
-                {szEventInfo, new Dictionary<string, string>() {
+                {"pInfo", new Dictionary<string, string>() {
                     {"en", "Event will start in <color=#FFFF00>{0}</color> at <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away.</color>"},
                 }},
-                {szEventStartedInfo, new Dictionary<string, string>() {
+                {"pAlready", new Dictionary<string, string>() {
                     {"en", "The event has already started at <color=#FFFF00>{0}</color>! You are <color=#FFA500>{1}m</color> away.</color>"},
                 }},
-                {szEventNext, new Dictionary<string, string>() {
+                {"pNext", new Dictionary<string, string>() {
                     {"en", "No events are open. Next event in <color=#FFFF00>{0}</color></color>"},
                 }},
-                {szEventThief, new Dictionary<string, string>() {
+                {"pThief", new Dictionary<string, string>() {
                     {"en", "The treasures at <color=#FFFF00>{0}</color> have been stolen by <color=#FFFF00>{1}</color>!</color>"},
                 }},
-                {szEventWins, new Dictionary<string, string>()
+                {"pWins", new Dictionary<string, string>()
                 {
                     {"en", "You have stolen <color=#FFFF00>{0}</color> treasure chests! View the ladder using <color=#FFA500>/{1} ladder</color> or <color=#FFA500>/{1} lifetime</color></color>"},
                 }},
-                {szLadder, new Dictionary<string, string>()
+                {"Ladder", new Dictionary<string, string>()
                 {
                     {"en", "<color=#FFFF00>[ Top 10 Treasure Hunters (This Wipe) ]</color>:"},
                 }},
-                {szLadderTotal, new Dictionary<string, string>()
+                {"Ladder Total", new Dictionary<string, string>()
                 {
                     {"en", "<color=#FFFF00>[ Top 10 Treasure Hunters (Lifetime) ]</color>:"},
                 }},
-                {szLadderInsufficient, new Dictionary<string, string>()
+                {"Ladder Insufficient Players", new Dictionary<string, string>()
                 {
                     {"en", "<color=#FFFF00>No players are on the ladder yet!</color>"},
                 }},
-                {szEventAt, new Dictionary<string, string>() {
+                {"Event At", new Dictionary<string, string>() {
                     {"en", "Event at {0}"},
                 }},
-                {szAutomated, new Dictionary<string, string>() {
+                {"Next Automated Event", new Dictionary<string, string>() {
                     {"en", "Next automated event in {0} at {1}"},
                 }},
-                {szNotEnough, new Dictionary<string, string>() {
+                {"Not Enough Online", new Dictionary<string, string>() {
                     {"en", "Not enough players online ({0} minimum)"},
                 }},
-                {szTreasureChest, new Dictionary<string, string>() {
+                {"Treasure Chest", new Dictionary<string, string>() {
                     {"en", "Treasure Chest <color=#FFA500>{0}m</color>"},
                 }},
-                {szInvalidConstant, new Dictionary<string, string>() {
+                {"Invalid Constant", new Dictionary<string, string>() {
                     {"en", "Invalid constant {0} - please notify the author!"},
                 }},
-                {szDestroyed, new Dictionary<string, string>() {
+                {"Destroyed Treasure Chest", new Dictionary<string, string>() {
                     {"en", "Destroyed a left over treasure chest at {0}"},
                 }},
-                {szIndestructible, new Dictionary<string, string>() {
+                {"Indestructible", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>Treasure chests are indestructible!</color>"},
                 }},
-                {szFirstTimeUse, new Dictionary<string, string>() {
+                {"View Config", new Dictionary<string, string>() {
                     {"en", "Please view the config if you haven't already."},
                 }},
-                {szNewmanEnter, new Dictionary<string, string>() {
+                {"Newman Enter", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>To walk with clothes is to set one-self on fire. Tread lightly.</color>"},
                 }},
-                {szNewmanTraitorBurn, new Dictionary<string, string>() {
+                {"Newman Traitor Burn", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands or PERISH!</color>"},
                 }},
-                {szNewmanTraitor, new Dictionary<string, string>() {
+                {"Newman Traitor", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands!</color>"},
                 }},
-                {szNewmanProtected, new Dictionary<string, string>() {
+                {"Newman Protected", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>This newman is temporarily protected on these grounds!</color>"},
                 }},
-                {szNewmanProtect, new Dictionary<string, string>() {
+                {"Newman Protect", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>You are protected on these grounds. Do not defile them.</color>"},
                 }},
-                {szNewmanProtectFade, new Dictionary<string, string>() {
+                {"Newman Protect Fade", new Dictionary<string, string>() {
                     {"en", "<color=#FF0000>Your protection has faded.</color>"},
                 }},
-                {szLogStolen, new Dictionary<string, string>() {
+                {"Log Stolen", new Dictionary<string, string>() {
                     {"en", "{0} ({1}) chests stolen {2}"},
                 }},
-                {szLogGranted, new Dictionary<string, string>() {
+                {"Log Granted", new Dictionary<string, string>() {
                     {"en", "Granted {0} ({1}) permission {2} for group {3}"},
                 }},
-                {szLogSaved, new Dictionary<string, string>() {
+                {"Log Saved", new Dictionary<string, string>() {
                     {"en", "Treasure Hunters have been logged to: {0}"},
                 }},
-                {szPrefix, new Dictionary<string, string>() {
+                {"Prefix", new Dictionary<string, string>() {
                     {"en", "<color=#C0C0C0>[ <color=#406B35>Dangerous Treasures</color> ] "},
                 }},
-                {szTimeDay, new Dictionary<string, string>() {
-                    {"en", "day"},
-                }},
-                {szTimeDays, new Dictionary<string, string>() {
-                    {"en", "days"},
-                }},
-                {szTimeHour, new Dictionary<string, string>() {
-                    {"en", "hour"},
-                }},
-                {szTimeHours, new Dictionary<string, string>() {
-                    {"en", "hours"},
-                }},
-                {szTimeMinute, new Dictionary<string, string>() {
-                    {"en", "minute"},
-                }},
-                {szTimeMinutes, new Dictionary<string, string>() {
-                    {"en", "minutes"},
-                }},
-                {szTimeSecond, new Dictionary<string, string>() {
-                    {"en", "second"},
-                }},
-                {szTimeSeconds, new Dictionary<string, string>() {
-                    {"en", "seconds"},
-                }},
-                {szTimeAnd, new Dictionary<string, string>() {
-                    {"en", "and {0}"},
-                }},
-                {szEventCountdown, new Dictionary<string, string>()
+                {"pCountdown", new Dictionary<string, string>()
                 {
                     {"en", "Event at <color=#FFFF00>{0}</color> will start in <color=#FFFF00>{1}</color>!</color>"},
                 }},
-                {szInvalidEntry, new Dictionary<string, string>()
-                {
-                    {"en", "Entry is missing key: {0}"},
-                }},
-                {szInvalidKey, new Dictionary<string, string>()
-                {
-                    {"en", "Invalid entry: {0} ({1})"},
-                }},
-                {szInvalidValue, new Dictionary<string, string>()
-                {
-                    {"en", "Invalid value: {0}"},
-                }},
-                {szUnloading, new Dictionary<string, string>()
-                {
-                    {"en", "No valid loot found in the config file under {0}! Unloading plugin..."},
-                }},
-                {szRestartDetected, new Dictionary<string, string>()
+                {"RestartDetected", new Dictionary<string, string>()
                 {
                     {"en", "Restart detected. Next event in {0} minutes."},
                 }},
-                {szDestroyingTreasure, new Dictionary<string, string>()
+                {"pDestroyingTreasure", new Dictionary<string, string>()
                 {
                     {"en", "The treasure at <color=#FFFF00>{0}</color> will be destroyed by fire in <color=#FFFF00>{1}</color> if not looted! Use <color=#FFA500>/{2}</color> to find this chest.</color>"},
                 }},
-                {szEconomicsDeposit, new Dictionary<string, string>()
+                {"EconomicsDeposit", new Dictionary<string, string>()
                 {
                     {"en", "You have received <color=#FFFF00>${0}</color> for stealing the treasure!"},
                 }},
-                {szRewardPoints, new Dictionary<string, string>()
+                {"ServerRewardPoints", new Dictionary<string, string>()
                 {
                     {"en", "You have received <color=#FFFF00>{0} RP</color> for stealing the treasure!"},
                 }},
@@ -3396,13 +3551,13 @@ namespace Oxide.Plugins
                 {"CannotBeMounted", new Dictionary<string, string>() {
                     {"en", "You cannot loot the treasure while mounted!"},
                 }},
-                {"pStartedNpcs", new Dictionary<string, string>() {
-                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable.</color>"},
+                {"CannotTeleport", new Dictionary<string, string>() {
+                    {"en", "You are not allowed to teleport from this event."},
                 }},
             };
         }
 
-        void RegisterMessages()
+        protected override void LoadDefaultMessages()
         {
             var compiledLangs = new Dictionary<string, Dictionary<string, string>>();
 
@@ -3421,392 +3576,78 @@ namespace Oxide.Plugins
                 lang.RegisterMessages(cLangs.Value, this, cLangs.Key);
         }
 
-        void LoadVariables()
+        static int GetPercentIncreasedAmount(int amount)
         {
-            RegisterMessages();
-
-            useRocketOpener = Convert.ToBoolean(GetConfig("Rocket Opener", "Enabled", true));
-            numRockets = Convert.ToInt32(GetConfig("Rocket Opener", "Rockets", 10));
-            useFireRockets = Convert.ToBoolean(GetConfig("Rocket Opener", "Use Fire Rockets", false));
-            rocketSpeed = Convert.ToSingle(GetConfig("Rocket Opener", "Speed", 5f).ToString());
-
-            if (rocketSpeed > 0.1f) rocketSpeed = 0.1f;
-
-            useFireballs = Convert.ToBoolean(GetConfig("Fireballs", "Enabled", true));
-            fbDamagePerSecond = Convert.ToSingle(GetConfig("Fireballs", "Damage Per Second", 10f).ToString());
-            fbLifeTimeMax = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Max", 10f).ToString());
-            fbLifeTimeMin = Convert.ToSingle(GetConfig("Fireballs", "Lifetime Min", 7.5f).ToString());
-            fbRadius = Convert.ToSingle(GetConfig("Fireballs", "Radius", 1f).ToString());
-            fbTickRate = Convert.ToSingle(GetConfig("Fireballs", "Tick Rate", 1f).ToString());
-            fbGeneration = Convert.ToSingle(GetConfig("Fireballs", "Generation", 5f).ToString());
-            fbWaterToExtinguish = Convert.ToInt32(GetConfig("Fireballs", "Water To Extinguish", 25));
-            secondsBeforeTick = Convert.ToInt32(GetConfig("Fireballs", "Spawn Every X Seconds", 5));
-
-            grantDraw = Convert.ToBoolean(GetConfig("Events", "Grant DDRAW temporarily to players", true));
-            drawTime = Convert.ToSingle(GetConfig("Events", "Grant Draw Time", 15f).ToString());
-
-            if (Config.Get("Treasure") != null)
+            if (_config.Treasure.UseDOWL && !_config.Treasure.Increased && _config.Treasure.PercentLoss > 0m)
             {
-                if (Config.Get("Treasure", "Items") != null) // update existing items to the new format for versions below 0.1.12
-                {
-                    var oldTreasure = Config.Get("Treasure", "Items") as Dictionary<string, object>;
-                    var newTreasure = new List<object>();
-
-                    foreach (var kvp in oldTreasure)
-                        newTreasure.Add(new TreasureItem { shortname = kvp.Key, amount = kvp.Value, skin = 0, amountMin = kvp.Value });
-
-                    Config.Remove("Treasure");
-                    Config.Set("Treasure", "Loot", newTreasure);
-                }
+                return UnityEngine.Random.Range(Convert.ToInt32(amount - (amount * _config.Treasure.PercentLoss)), amount);
             }
 
-            percentLoss = Convert.ToDecimal(GetConfig("Treasure", "Minimum Percent Loss", 0m));
+            decimal percentIncrease = 0m;
 
-            if (percentLoss > 0)
-                percentLoss /= 100m;
-
-            pctIncreasesDayLoot = Convert.ToBoolean(GetConfig("Treasure", "Percent Increase When Using Day Of Week Loot", false));
-
-            foreach (DayOfWeek day in Enum.GetValues(typeof(DayOfWeek)))
+            switch (DateTime.Now.DayOfWeek)
             {
-                pctIncreases[day] = Convert.ToDecimal(GetConfig("Treasure", string.Format("Percent Increase On {0}", day.ToString()), 0m));
-                var treasures = GetConfig("Treasure", string.Format("Day Of Week Loot {0}", day.ToString()), new List<object>()) as List<object>;
-
-                if (treasures != null && treasures.Count > 0 && DateTime.Now.DayOfWeek == day)
-                    SetTreasure(treasures, true);
+                case DayOfWeek.Monday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnMonday;
+                        break;
+                    }
+                case DayOfWeek.Tuesday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnTuesday;
+                        break;
+                    }
+                case DayOfWeek.Wednesday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnWednesday;
+                        break;
+                    }
+                case DayOfWeek.Thursday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnThursday;
+                        break;
+                    }
+                case DayOfWeek.Friday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnFriday;
+                        break;
+                    }
+                case DayOfWeek.Saturday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnSaturday;
+                        break;
+                    }
+                case DayOfWeek.Sunday:
+                    {
+                        percentIncrease = _config.Treasure.PercentIncreaseOnSunday;
+                        break;
+                    }
             }
-
-            if (chestLoot.Count == 0)
-            {
-                var treasures = GetConfig("Treasure", "Loot", DefaultTreasure) as List<object>;
-
-                if (treasures != null && treasures.Count > 0)
-                    SetTreasure(treasures, false);
-            }
-
-            useRandomTreasureSkins = Convert.ToBoolean(GetConfig("Treasure", "Use Random Skins", false));
-            includeWorkshopTreasure = Convert.ToBoolean(GetConfig("Treasure", "Include Workshop Skins", false));
-
-            unlockTimeMin = Convert.ToSingle(GetConfig("Unlock Time", "Min Seconds", 300f).ToString());
-            unlockTimeMax = Convert.ToSingle(GetConfig("Unlock Time", "Max Seconds", 480f).ToString());
-            unlockWhenNpcsDie = Convert.ToBoolean(GetConfig("Unlock Time", "Unlock When Npcs Die", false));
-            requireAllNpcsDie = Convert.ToBoolean(GetConfig("Unlock Time", "Require All Npcs Die Before Unlocking", true));
-
-            useRandomBoxSkin = Convert.ToBoolean(GetConfig("Skins", "Use Random Skin", true));
-            presetSkin = Convert.ToUInt64(GetConfig("Skins", "Preset Skin", 0uL));
-            includeWorkshopBox = Convert.ToBoolean(GetConfig("Skins", "Include Workshop Skins", true));
-
-            automatedEvents = Convert.ToBoolean(GetConfig("Events", "Automated", true));
-            eventIntervalMin = Convert.ToSingle(GetConfig("Events", "Every Min Seconds", 3600f).ToString());
-            eventIntervalMax = Convert.ToSingle(GetConfig("Events", "Every Max Seconds", 7200f).ToString());
-            maxEvents = Convert.ToInt32(GetConfig("Events", szMaxManualEvents, 1));
-            treasureAmount = Convert.ToInt32(GetConfig("Events", "Amount Of Items To Spawn", 6));
-            useSpheres = Convert.ToBoolean(GetConfig("Events", "Use Spheres", true));
-            amountOfSpheres = Convert.ToInt32(GetConfig("Events", "Amount Of Spheres", 5));
-            playerLimit = Convert.ToInt32(GetConfig("Events", "Player Limit For Event", 0));
-            eventRadius = Convert.ToSingle(GetConfig("Events", "Fire Aura Radius (Advanced Users Only)", 25f));
-
-            onlyMonuments = Convert.ToBoolean(GetConfig("Monuments", "Auto Spawn At Monuments Only", false));
-            allowMonumentChance = Convert.ToSingle(GetConfig("Monuments", "Chance To Spawn At Monuments Instead", 0f));
-            undergroundLoot = Convert.ToBoolean(GetConfig("Monuments", "Allow Treasure Loot Underground", false));
-
-            var blMonuments = (GetConfig("Monuments", "Blacklisted", DefaultBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
-
-            foreach (string name in blMonuments)
-            {
-                if (!blacklistedMonuments.Contains(name))
-                {
-                    blacklistedMonuments.Add(name);
-                }
-            }
-
-            if (allowMonumentChance < 0f)
-                allowMonumentChance = 0f;
-
-            if (allowMonumentChance > 1f)
-                allowMonumentChance /= 100f;
-            
-            if (eventRadius < 10f)
-                eventRadius = 10f;
-
-            if (eventRadius > 150f)
-                eventRadius = 150f;
-
-            permName = Convert.ToString(GetConfig("Settings", "Permission Name", "dangeroustreasures.use"));
-
-            if (!string.IsNullOrEmpty(permName) && !permission.PermissionExists(permName))
-                permission.RegisterPermission(permName, this);
-
-            szEventChatCommand = Convert.ToString(GetConfig("Settings", "Event Chat Command", "dtevent"));
-
-            if (!string.IsNullOrEmpty(szEventChatCommand))
-                cmd.AddChatCommand(szEventChatCommand, this, cmdDangerousTreasures);
-
-            szDistanceChatCommand = Convert.ToString(GetConfig("Settings", "Distance Chat Command", "dtd"));
-
-            if (!string.IsNullOrEmpty(szDistanceChatCommand))
-                cmd.AddChatCommand(szDistanceChatCommand, this, cmdTreasureHunter);
-
-            szEventConsoleCommand = Convert.ToString(GetConfig("Settings", "Event Console Command", "dtevent"));
-
-            if (!string.IsNullOrEmpty(szEventConsoleCommand))
-                cmd.AddConsoleCommand(szEventConsoleCommand, this, nameof(ccmdDangerousTreasures));
-
-            truePVEAllowPVPAtEvents = Convert.ToBoolean(GetConfig("TruePVE", "Allow PVP At Events", true));
-            truePVEServerWidePVP = Convert.ToBoolean(GetConfig("TruePVE", "Allow PVP Server-Wide During Events", false));
-            truePVEAllowBuildingDamageAtEvents = Convert.ToBoolean(GetConfig("TruePVE", "Allow Building Damage At Events", false));
-
-            showBarrage = Convert.ToBoolean(GetConfig("Event Messages", "Show Barrage Message", true));
-            showOpened = Convert.ToBoolean(GetConfig("Event Messages", "Show Opened Message", true));
-            showStarted = Convert.ToBoolean(GetConfig("Event Messages", "Show Started Message", true));
-            showPrefix = Convert.ToBoolean(GetConfig("Event Messages", "Show Prefix", true));
-            showFirstEntered = Convert.ToBoolean(GetConfig("Event Messages", "Show First Player Entered", false));
-            showOpenedMsg = Convert.ToBoolean(GetConfig("Event Messages", "Show First Player Opened", false));
-            showDestructMsg = Convert.ToBoolean(GetConfig("Event Messages", "Show Despawn Message", false));
-            
-            newmanMode = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Fire Aura", false));
-            newmanProtect = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Other Harm", false));
-
-            destructTime = Convert.ToSingle(GetConfig("Events", "Time To Loot", 900f).ToString());
-
-            launchMissiles = Convert.ToBoolean(GetConfig("Missile Launcher", "Enabled", false));
-            targetChest = Convert.ToBoolean(GetConfig("Missile Launcher", "Target Chest If No Player Target", false));
-            missileFrequency = Convert.ToSingle(GetConfig("Missile Launcher", "Spawn Every X Seconds", 15f).ToString());
-            targettingTime = Convert.ToSingle(GetConfig("Missile Launcher", "Acquire Time In Seconds", 10f).ToString());
-            timeUntilExplode = Convert.ToSingle(GetConfig("Missile Launcher", "Life Time In Seconds", 60f).ToString());
-            ignoreFlying = Convert.ToBoolean(GetConfig("Missile Launcher", "Ignore Flying Players", false));
-            missileDetectionDistance = Convert.ToSingle(GetConfig("Missile Launcher", "Detection Distance", 15f));
-            rocketDamageAmount = Convert.ToSingle(GetConfig("Missile Launcher", "Damage Per Missile", 0.0f));
-
-            if (missileDetectionDistance < 1f)
-                missileDetectionDistance = 1f;
-            else if (missileDetectionDistance > 100f)
-                missileDetectionDistance = 100f;
-
-            recordStats = Convert.ToBoolean(GetConfig("Ranked Ladder", "Enabled", true));
-            ladderPerm = Convert.ToString(GetConfig("Ranked Ladder", "Permission Name", "dangeroustreasures.th"));
-            ladderGroup = Convert.ToString(GetConfig("Ranked Ladder", "Group Name", "treasurehunter"));
-            permsToGive = Convert.ToInt32(GetConfig("Ranked Ladder", "Award Top X Players On Wipe", 3));
-
-            if (string.IsNullOrEmpty(ladderPerm))
-                ladderPerm = "dangeroustreasures.th";
-
-            if (string.IsNullOrEmpty(ladderGroup))
-                ladderGroup = "treasurehunter";
-
-            useLustyMap = Convert.ToBoolean(GetConfig("Lusty Map", "Enabled", true));
-            lustyMapIconFile = Convert.ToString(GetConfig("Lusty Map", "Icon File", "http://i.imgur.com/XoEMTJj.png"));
-            lustyMapIconName = Convert.ToString(GetConfig("Lusty Map", "Icon Name", "dtchest"));
-            lustyMapRotation = Convert.ToSingle(GetConfig("Lusty Map", "Icon Rotation", 0f));
-
-            if (lustyMapIconFile == "special")
-            {
-                lustyMapIconFile = "http://i.imgur.com/XoEMTJj.png";
-            }
-
-            if (string.IsNullOrEmpty(lustyMapIconFile) || string.IsNullOrEmpty(lustyMapIconName))
-                useLustyMap = false;
-
-            if (!string.IsNullOrEmpty(ladderPerm))
-            {
-                if (!permission.PermissionExists(ladderPerm))
-                    permission.RegisterPermission(ladderPerm, this);
-
-                if (!string.IsNullOrEmpty(ladderGroup))
-                {
-                    permission.CreateGroup(ladderGroup, ladderGroup, 0);
-                    permission.GrantGroupPermission(ladderGroup, ladderPerm, this);
-                }
-            }
-
-            useCountdown = Convert.ToBoolean(GetConfig("Countdown", "Use Countdown Before Event Starts", false));
-            var times = GetConfig("Countdown", "Time In Seconds", DefaultTimesInSeconds) as List<object>;
-
-            if (useCountdown)
-            {
-                foreach (var entry in times)
-                {
-                    int time;
-                    if (entry != null && int.TryParse(entry.ToString(), out time) && time > 0)
-                        countdownTimes.Add(time);
-                }
-
-                if (countdownTimes.Count == 0)
-                    useCountdown = false;
-            }
-
-            useUnclaimedAnnouncements = Convert.ToBoolean(GetConfig("Unlooted Announcements", "Enabled", false));
-            unclaimedInterval = Convert.ToSingle(GetConfig("Unlooted Announcements", "Notify Every X Minutes (Minimum 1)", 3f));
-
-            if (unclaimedInterval < 1f)
-                unclaimedInterval = 1f;
-
-            drawTreasureIfNearby = Convert.ToBoolean(GetConfig("Events", "Auto Draw On New Event For Nearby Players", false));
-            autoDrawDistance = Convert.ToSingle(GetConfig("Events", "Auto Draw Minimum Distance", 300f));
-
-            if (autoDrawDistance < 0f)
-                autoDrawDistance = 0f;
-            else if (autoDrawDistance > ConVar.Server.worldsize)
-                autoDrawDistance = ConVar.Server.worldsize;
-
-            useEconomics = Convert.ToBoolean(GetConfig("Rewards", "Use Economics", false));
-            economicsMoney = Convert.ToDouble(GetConfig("Rewards", "Economics Money", 20.0));
-            useServerRewards = Convert.ToBoolean(GetConfig("Rewards", "Use ServerRewards", false));
-            serverRewardsPoints = Convert.ToDouble(GetConfig("Rewards", "ServerRewards Points", 20.0));
-
-            useGUIAnnouncements = Convert.ToBoolean(GetConfig("GUIAnnouncements", "Enabled", false));
-            guiTextColor = Convert.ToString(GetConfig("GUIAnnouncements", "Text Color", "White"));
-            guiTintColor = Convert.ToString(GetConfig("GUIAnnouncements", "Banner Tint Color", "Grey"));
-            guiDrawDistance = Convert.ToSingle(GetConfig("GUIAnnouncements", "Maximum Distance", 300f));
-
-            if (guiTintColor.ToLower() == "black") guiTintColor = "grey";
-
-            spawnNpcs = Convert.ToBoolean(GetConfig("NPCs", "Enabled", false));
-            spawnNpcsAmount = Convert.ToInt32(GetConfig("NPCs", "Amount To Spawn", 2));
-            spawnNpcsMinAmount = Convert.ToInt32(GetConfig("NPCs", "Minimum Amount To Spawn", 1));
-            spawnNpcsBoth = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers And Scientists", false));
-            spawnNpcsMurderers = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers", false));
-            spawnScientistsOnly = Convert.ToBoolean(GetConfig("NPCs", "Spawn Scientists Only", false));
-            spawnsDespawnInventory = Convert.ToBoolean(GetConfig("NPCs", "Despawn Inventory On Death", true));
-            spawnNpcsRandomAmount = Convert.ToBoolean(GetConfig("NPCs", "Spawn Random Amount", false));
-            blacklistedNPCMonuments = (GetConfig("NPCs", "Blacklisted", DefaultNPCBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
-            randomNames = (GetConfig("NPCs", "Random Names", new List<object>()) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
-            murdererItems = (GetConfig("NPCs", "Murderer Items", DefaultMurdererItems) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
-
-            showXZ = Convert.ToBoolean(GetConfig("Settings", "Show X Z Coordinates", false));
-
-            if (spawnNpcsAmount < 1)
-                spawnNpcs = false;
-
-            if (spawnNpcsAmount > 25)
-                spawnNpcsAmount = 25;
-
-            if (spawnNpcsMinAmount < 1 || spawnNpcsMinAmount > spawnNpcsAmount)
-                spawnNpcsMinAmount = 1;
-
-            if (Changed)
-            {
-                SaveConfig();
-                Changed = false;
-            }
-        }
-
-        int GetPercentIncreasedAmount(int amount)
-        {
-            if (usingDayOfWeekLoot && !pctIncreasesDayLoot)
-            {
-                if (percentLoss > 0m)
-                    amount = UnityEngine.Random.Range(Convert.ToInt32(amount - (amount * percentLoss)), amount);
-
-                return amount;
-            }
-
-            decimal percentIncrease = pctIncreases.ContainsKey(DateTime.Now.DayOfWeek) ? pctIncreases[DateTime.Now.DayOfWeek] : 0m;
 
             if (percentIncrease > 1m)
+            {
                 percentIncrease /= 100;
+            }
 
             if (percentIncrease > 0m)
             {
                 amount = Convert.ToInt32(amount + (amount * percentIncrease));
 
-                if (percentLoss > 0m)
-                    amount = UnityEngine.Random.Range(Convert.ToInt32(amount - (amount * percentLoss)), amount);
+                if (_config.Treasure.PercentLoss > 0m)
+                {
+                    amount = UnityEngine.Random.Range(Convert.ToInt32(amount - (amount * _config.Treasure.PercentLoss)), amount);
+                }
             }
 
             return amount;
         }
 
-        void SetTreasure(List<object> treasures, bool dayOfWeekLoot)
+        static string _(string key, string id = null, params object[] args)
         {
-            if (treasures != null && treasures.Count > 0)
-            {
-                chestLoot.Clear();
-                usingDayOfWeekLoot = dayOfWeekLoot;
-
-                foreach (var entry in treasures)
-                {
-                    if (entry is Dictionary<string, object>)
-                    {
-                        var dict = entry as Dictionary<string, object>;
-
-                        if (dict.ContainsKey("shortname") && dict.ContainsKey("amount") && dict.ContainsKey("skin"))
-                        {
-                            int amount;
-                            if (int.TryParse(dict["amount"].ToString(), out amount))
-                            {
-                                ulong skin;
-                                if (ulong.TryParse(dict["skin"].ToString(), out skin))
-                                {
-                                    if (dict["shortname"] != null && dict["shortname"].ToString().Length > 0)
-                                    {
-                                        int min;
-                                        if (dict.ContainsKey("amountMin") && dict["amountMin"] != null && int.TryParse(dict["amountMin"].ToString(), out min))
-                                        {
-                                            chestLoot.Add(new TreasureItem() { shortname = dict["shortname"], amount = amount, skin = skin, amountMin = min });
-                                        }
-                                        else chestLoot.Add(new TreasureItem() { shortname = dict["shortname"], amount = amount, skin = skin, amountMin = amount });
-                                    }
-                                    else
-                                        Puts(rf(szInvalidValue, null, dict["shortname"] == null ? "null" : dict["shortname"]));
-                                }
-                                else
-                                    Puts(rf(szInvalidValue, null, dict["skin"]));
-                            }
-                            else
-                                Puts(rf(szInvalidValue, null, dict["amount"]));
-                        }
-                        else
-                        {
-                            foreach (var kvp in dict.Where(e => !e.Key.Equals("shortname") && !e.Key.Equals("amount") && !e.Key.Equals("skin")))
-                                Puts(rf(szInvalidKey, null, kvp.Key, kvp.Value));
-
-                            if (!dict.ContainsKey("amount"))
-                                Puts(rf(szInvalidEntry, null, "amount"));
-
-                            if (!dict.ContainsKey("shortname"))
-                                Puts(rf(szInvalidEntry, null, "shortname"));
-
-                            if (!dict.ContainsKey("skin"))
-                                Puts(rf(szInvalidEntry, null, "skin"));
-                        }
-                    }
-                }
-            }
+            return ins.RemoveFormatting(ins.msg(key, id, args));
         }
 
-        protected override void LoadDefaultConfig()
-        {
-            PrintWarning("Creating a new configuration file");
-            Config.Clear();
-            LoadVariables();
-        }
-
-        object GetConfig(string menu, string datavalue, object defaultValue)
-        {
-            var data = Config[menu] as Dictionary<string, object>;
-            if (data == null)
-            {
-                data = new Dictionary<string, object>();
-                Config[menu] = data;
-                Changed = true;
-            }
-            object value;
-            if (!data.TryGetValue(datavalue, out value))
-            {
-                value = defaultValue;
-                data[datavalue] = value;
-                Changed = true;
-            }
-            return value;
-        }
-
-        string rf(string key, string id = null, params object[] args)
-        {
-            return RemoveFormatting(msg(key, id, args));
-        }
-
-        private Dictionary<string, string> hexColors = new Dictionary<string, string>
+        Dictionary<string, string> colors = new Dictionary<string, string>
         {
             ["<color=blue>"] = "<color=#0000FF>",
             ["<color=red>"] = "<color=#FF0000>",
@@ -3819,38 +3660,748 @@ namespace Oxide.Plugins
             ["<color=lime>"] = "<color=#00FF00>",
         };
 
+        string GetPrefix()
+        {
+            return lang.GetMessage("Prefix", this, null);
+        }
+
+        StringBuilder _cachedStringBuilder = new StringBuilder();
         string msg(string key, string id = null, params object[] args)
         {
-            string message = lang.GetMessage(key, this, id);
+            _cachedStringBuilder.Clear();
 
-            if (message == key) // message does not exist?
-                message = lang.GetMessage(key, this, null);
-
-            if (!string.IsNullOrEmpty(id) && key.Length > 0 && key[0] == 'p' && showPrefix)
+            if (_config.EventMessages.Prefix && key.Length > 0 && key[0] == 'p')
             {
-                string prefix = lang.GetMessage(szPrefix, this, id);
-
-                if (prefix == szPrefix) // message does not exist?
-                    prefix = lang.GetMessage(key, this, null);
-
-                message = prefix + message;
+                _cachedStringBuilder.Append(GetPrefix());
             }
 
-            if (!showPrefix && key.Length > 0 && key[0] == 'p')
-                message = "<color=#C0C0C0>" + message;
-
-            foreach (var entry in hexColors)
+            if (!_config.EventMessages.Prefix && key.Length > 0 && key[0] == 'p')
             {
-                if (message.Contains(entry.Key))
-                {
-                    message = message.Replace(entry.Key, entry.Value);
-                }
+                _cachedStringBuilder.Append("<color=#C0C0C0>");
             }
+
+            _cachedStringBuilder.Append(lang.GetMessage(key, this, id));
+
+            foreach (var entry in colors)
+            {
+                _cachedStringBuilder.Replace(entry.Key, entry.Value);
+            }
+
+            string message = _cachedStringBuilder.ToString();
 
             return message.Contains("{") ? string.Format(message, args) : message;
         }
 
         string RemoveFormatting(string source) => source.Contains(">") ? System.Text.RegularExpressions.Regex.Replace(source, "<.*?>", string.Empty) : source;
+        #endregion
+
+        #region Configuration
+
+        private static Configuration _config;
+
+        private static List<TreasureItem> DefaultLoot
+        {
+            get
+            {
+                return new List<TreasureItem>
+                {
+                    new TreasureItem { shortname = "ammo.pistol", amount = 40, skin = 0, amountMin = 40 },
+                    new TreasureItem { shortname = "ammo.pistol.fire", amount = 40, skin = 0, amountMin = 40 },
+                    new TreasureItem { shortname = "ammo.pistol.hv", amount = 40, skin = 0, amountMin = 40 },
+                    new TreasureItem { shortname = "ammo.rifle", amount = 60, skin = 0, amountMin = 60 },
+                    new TreasureItem { shortname = "ammo.rifle.explosive", amount = 60, skin = 0, amountMin = 60 },
+                    new TreasureItem { shortname = "ammo.rifle.hv", amount = 60, skin = 0, amountMin = 60 },
+                    new TreasureItem { shortname = "ammo.rifle.incendiary", amount = 60, skin = 0, amountMin = 60 },
+                    new TreasureItem { shortname = "ammo.shotgun", amount = 24, skin = 0, amountMin = 24 },
+                    new TreasureItem { shortname = "ammo.shotgun.slug", amount = 40, skin = 0, amountMin = 40 },
+                    new TreasureItem { shortname = "surveycharge", amount = 20, skin = 0, amountMin = 20 },
+                    new TreasureItem { shortname = "metal.refined", amount = 150, skin = 0, amountMin = 150 },
+                    new TreasureItem { shortname = "bucket.helmet", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "cctv.camera", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "coffeecan.helmet", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "explosive.timed", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "metal.facemask", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "metal.plate.torso", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "mining.quarry", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "pistol.m92", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "rifle.ak", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "rifle.bolt", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "rifle.lr300", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "smg.2", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "smg.mp5", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "smg.thompson", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "supply.signal", amount = 1, skin = 0, amountMin = 1 },
+                    new TreasureItem { shortname = "targeting.computer", amount = 1, skin = 0, amountMin = 1 },
+                };
+            }
+        }
+
+        public class PluginSettings
+        {
+            [JsonProperty(PropertyName = "Permission Name")]
+            public string PermName { get; set; } = "dangeroustreasures.use";
+
+            [JsonProperty(PropertyName = "Event Chat Command")]
+            public string EventChatCommand { get; set; } = "dtevent";
+
+            [JsonProperty(PropertyName = "Distance Chat Command")]
+            public string DistanceChatCommand { get; set; } = "dtd";
+
+            [JsonProperty(PropertyName = "Draw Location On Screen With Distance Command")]
+            public bool AllowDrawText { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Event Console Command")]
+            public string EventConsoleCommand { get; set; } = "dtevent";
+
+            [JsonProperty(PropertyName = "Show X Z Coordinates")]
+            public bool ShowXZ { get; set; } = False;
+        }
+
+        public class CountdownSettings
+        {
+            [JsonProperty(PropertyName = "Use Countdown Before Event Starts")]
+            public bool Enabled { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Time In Seconds", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<int> Times { get; set; } = new List<int> { 120, 60, 30, 15 };
+        }
+
+        public class EventSettings
+        {
+            [JsonProperty(PropertyName = "Automated")]
+            public bool Automated { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Every Min Seconds")]
+            public float IntervalMin { get; set; } = 3600f;
+
+            [JsonProperty(PropertyName = "Every Max Seconds")]
+            public float IntervalMax { get; set; } = 7200f;
+
+            [JsonProperty(PropertyName = "Use Vending Map Marker")]
+            public bool MarkerVending { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Use Explosion Map Marker")]
+            public bool MarkerExplosion { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Marker Event Name")]
+            public string MarkerName { get; set; } = "Dangerous Treasures Event";
+
+            [JsonProperty(PropertyName = "Max Manual Events")]
+            public int Max { get; set; } = 1;
+
+            [JsonProperty(PropertyName = "Amount Of Items To Spawn")]
+            public int TreasureAmount { get; set; } = 6;
+
+            [JsonProperty(PropertyName = "Use Spheres")]
+            public bool Spheres { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Amount Of Spheres")]
+            public int SphereAmount { get; set; } = 5;
+
+            [JsonProperty(PropertyName = "Player Limit For Event")]
+            public int PlayerLimit { get; set; } = 1;
+
+            [JsonProperty(PropertyName = "Fire Aura Radius (Advanced Users Only)")]
+            public float Radius { get; set; } = 25f;
+
+            [JsonProperty(PropertyName = "Auto Draw On New Event For Nearby Players")]
+            public bool DrawTreasureIfNearby { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Auto Draw Minimum Distance")]
+            public float AutoDrawDistance { get; set; } = 300f;
+
+            [JsonProperty(PropertyName = "Grant DDRAW temporarily to players")]
+            public bool GrantDraw { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Grant Draw Time")]
+            public float DrawTime { get; set; } = 15f;
+
+            [JsonProperty(PropertyName = "Time To Loot")]
+            public float DestructTime { get; set; } = 900f;
+        }
+
+        public class EventMessageSettings
+        {
+            [JsonProperty(PropertyName = "Show Barrage Message")]
+            public bool Barrage { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Show Despawn Message")]
+            public bool Destruct { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Show First Player Entered")]
+            public bool FirstEntered { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Show First Player Opened")]
+            public bool FirstOpened { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Show Opened Message")]
+            public bool Opened { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Show Prefix")]
+            public bool Prefix { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Show Started Message")]
+            public bool Started { get; set; } = True;
+        }
+
+        public class FireballSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Damage Per Second")]
+            public float DamagePerSecond { get; set; } = 10f;
+
+            [JsonProperty(PropertyName = "Lifetime Min")]
+            public float LifeTimeMin { get; set; } = 7.5f;
+
+            [JsonProperty(PropertyName = "Lifetime Max")]
+            public float LifeTimeMax { get; set; } = 10f;
+
+            [JsonProperty(PropertyName = "Radius")]
+            public float Radius { get; set; } = 1f;
+
+            [JsonProperty(PropertyName = "Tick Rate")]
+            public float TickRate { get; set; } = 1f;
+
+            [JsonProperty(PropertyName = "Generation")]
+            public float Generation { get; set; } = 5f;
+
+            [JsonProperty(PropertyName = "Water To Extinguish")]
+            public int WaterToExtinguish { get; set; } = 25;
+
+            [JsonProperty(PropertyName = "Spawn Every X Seconds")]
+            public int SecondsBeforeTick { get; set; } = 5;
+        }
+
+        public class GUIAnnouncementSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Text Color")]
+            public string TextColor { get; set; } = "White";
+
+            [JsonProperty(PropertyName = "Banner Tint Color")]
+            public string TintColor { get; set; } = "Grey";
+
+            [JsonProperty(PropertyName = "Maximum Distance")]
+            public float Distance { get; set; } = 300f;
+        }
+
+        public class LustyMapSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = True;
+             
+            [JsonProperty(PropertyName = "Icon Name")]
+            public string IconName { get; set; } = "dtchest";
+
+            [JsonProperty(PropertyName = "Icon File")]
+            public string IconFile { get; set; } = "http://i.imgur.com/XoEMTJj.png";
+
+            [JsonProperty(PropertyName = "Icon Rotation")]
+            public float IconRotation { get; set; } = 0f;
+        }
+
+        public class MissileLauncherSettings
+        {
+            [JsonProperty(PropertyName = "Acquire Time In Seconds")]
+            public float TargettingTime { get; set; } = 10f;
+
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Damage Per Missile")]
+            public float Damage { get; set; } = 0.0f;
+
+            [JsonProperty(PropertyName = "Detection Distance")]
+            public float Distance { get; set; } = 15f;
+
+            [JsonProperty(PropertyName = "Life Time In Seconds")]
+            public float Lifetime { get; set; } = 60f;
+
+            [JsonProperty(PropertyName = "Ignore Flying Players")]
+            public bool IgnoreFlying { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Spawn Every X Seconds")]
+            public float Frequency { get; set; } = 15f;
+
+            [JsonProperty(PropertyName = "Target Chest If No Player Target")]
+            public bool TargetChest { get; set; } = False;
+        }
+
+        public class MonumentSettings
+        {
+            [JsonProperty(PropertyName = "Blacklisted", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> Blacklist { get; set; } = new List<string> { "Bandit Camp", "Outpost", "Junkyard" };
+
+            [JsonProperty(PropertyName = "Auto Spawn At Monuments Only")]
+            public bool Only { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Chance To Spawn At Monuments Instead")]
+            public float Chance { get; set; } = 0.0f;
+
+            [JsonProperty(PropertyName = "Allow Treasure Loot Underground")]
+            public bool Underground { get; set; } = False;
+        }
+        
+        public class NewmanModeSettings
+        {
+            [JsonProperty(PropertyName = "Protect Nakeds From Fire Aura")]
+            public bool Aura { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Protect Nakeds From Other Harm")]
+            public bool Harm { get; set; } = False;
+        }
+
+        public class NpcSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Spawn Murderers")]
+            public bool SpawnMurderers { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Spawn Scientists Only")]
+            public bool SpawnScientistsOnly { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Spawn Murderers And Scientists")]
+            public bool SpawnBoth { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Amount To Spawn")]
+            public int SpawnAmount { get; set; } = 3;
+
+            [JsonProperty(PropertyName = "Minimum Amount To Spawn")]
+            public int SpawnMinAmount { get; set; } = 1;
+
+            [JsonProperty(PropertyName = "Despawn Inventory On Death")]
+            public bool DespawnInventory { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Spawn Random Amount")]
+            public bool SpawnRandomAmount { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Health For Murderers (100 min, 5000 max)")]
+            public float MurdererHealth { get; set; } = 150f;
+
+            [JsonProperty(PropertyName = "Health For Scientists (100 min, 5000 max)")]
+            public float ScientistHealth { get; set; } = 150f;
+
+            [JsonProperty(PropertyName = "Murderer Sprinting Speed (0 min, 25 max)")]
+            public float MurdererSpeedSprinting { get; set; } = 2.5f;
+
+            [JsonProperty(PropertyName = "Murderer Walking Speed (0 min, 25 max)")]
+            public float MurdererSpeedWalking { get; set; } = 1.5f;
+
+            [JsonProperty(PropertyName = "Scientist Sprinting Speed (0 min, 25 max)")]
+            public float ScientistSpeedSprinting { get; set; } = 1.0f;
+
+            [JsonProperty(PropertyName = "Scientist Walking Speed (0 min, 25 max)")]
+            public float ScientistSpeedWalking { get; set; } = 0.0f;
+
+            [JsonProperty(PropertyName = "Murderer Items", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> MurdererItems { get; set; } = new List<string> { "metal.facemask", "metal.plate.torso", "pants", "tactical.gloves", "boots.frog", "tshirt", "machete" };
+
+            [JsonProperty(PropertyName = "Scientist Items", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> ScientistItems { get; set; } = new List<string> { "hazmatsuit_scientist_peacekeeper", "rifle.ak" };
+
+            [JsonProperty(PropertyName = "Murderer Kits", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> MurdererKits { get; set; } = new List<string> { "murderer_kit_1", "murderer_kit_2" };
+
+            [JsonProperty(PropertyName = "Scientist Kits", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> ScientistKits { get; set; } = new List<string> { "scientist_kit_1", "scientist_kit_2" };
+
+            [JsonProperty(PropertyName = "Blacklisted", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> BlacklistedMonuments { get; set; } = new List<string> { "Bandit Camp", "Outpost", "Junkyard" };
+
+            [JsonProperty(PropertyName = "Random Names", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> RandomNames { get; set; } = new List<string>();
+        }
+
+        public class PasteOption
+        {
+            [JsonProperty(PropertyName = "Option")]
+            public string Key { get; set; }
+
+            [JsonProperty(PropertyName = "Value")]
+            public string Value { get; set; }
+        }
+
+        public class RankedLadderSettings
+        {
+            [JsonProperty(PropertyName = "Award Top X Players On Wipe")]
+            public int Amount { get; set; } = 3;
+
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Group Name")]
+            public string Group { get; set; } = "treasurehunter";
+
+            [JsonProperty(PropertyName = "Permission Name")]
+            public string Permission { get; set; } = "dangeroustreasures.th";
+        }
+
+        public class RewardSettings
+        {
+            [JsonProperty(PropertyName = "Economics Money")]
+            public double Money { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "ServerRewards Points")]
+            public double Points { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Use Economics")]
+            public bool Economics { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Use ServerRewards")]
+            public bool ServerRewards { get; set; } = False;
+        }
+
+        public class RocketOpenerSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Rockets")]
+            public int Amount { get; set; } = 8;
+
+            [JsonProperty(PropertyName = "Speed")]
+            public float Speed { get; set; } = 5f;
+
+            [JsonProperty(PropertyName = "Use Fire Rockets")]
+            public bool FireRockets { get; set; } = False;
+        }
+
+        public class SkinSettings
+        {
+            [JsonProperty(PropertyName = "Use Random Skin")]
+            public bool RandomSkins { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Preset Skin")]
+            public ulong PresetSkin { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Include Workshop Skins")]
+            public bool RandomWorkshopSkins { get; set; } = True;
+        }
+
+        public class TreasureItem
+        {
+            public string shortname { get; set; }
+            public int amount { get; set; }
+            public ulong skin { get; set; }
+            public int amountMin { get; set; }
+        }
+
+        public class TreasureSettings
+        {
+            [JsonProperty(PropertyName = "Loot", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> Loot { get; set; } = DefaultLoot;
+
+            [JsonProperty(PropertyName = "Minimum Percent Loss")]
+            public decimal PercentLoss { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase When Using Day Of Week Loot")]
+            public bool Increased { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Use Random Skins")]
+            public bool RandomSkins { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Include Workshop Skins")]
+            public bool RandomWorkshopSkins { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Monday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Monday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Tuesday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Tuesday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Wednesday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Wednesday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Thursday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Thursday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Friday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Friday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Saturday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Saturday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Day Of Week Loot Sunday", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<TreasureItem> DOWL_Sunday { get; set; } = new List<TreasureItem>();
+
+            [JsonProperty(PropertyName = "Use Day Of Week Loot")]
+            public bool UseDOWL { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Percent Increase On Monday")]
+            public decimal PercentIncreaseOnMonday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Tuesday")]
+            public decimal PercentIncreaseOnTuesday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Wednesday")]
+            public decimal PercentIncreaseOnWednesday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Thursday")]
+            public decimal PercentIncreaseOnThursday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Friday")]
+            public decimal PercentIncreaseOnFriday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Saturday")]
+            public decimal PercentIncreaseOnSaturday { get; set; } = 0;
+
+            [JsonProperty(PropertyName = "Percent Increase On Sunday")]
+            public decimal PercentIncreaseOnSunday { get; set; } = 0;
+        }
+
+        public class TruePVESettings
+        {
+            [JsonProperty(PropertyName = "Allow Building Damage At Events")]
+            public bool AllowBuildingDamageAtEvents { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Allow PVP At Events")]
+            public bool AllowPVPAtEvents { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Allow PVP Server-Wide During Events")]
+            public bool ServerWidePVP { get; set; } = False;
+        }
+
+        public class UnlockSettings
+        {
+            [JsonProperty(PropertyName = "Min Seconds")]
+            public float MinTime { get; set; } = 300f;
+
+            [JsonProperty(PropertyName = "Max Seconds")]
+            public float MaxTime { get; set; } = 480f;
+
+            [JsonProperty(PropertyName = "Unlock When Npcs Die")]
+            public bool WhenNpcsDie { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Require All Npcs Die Before Unlocking")]
+            public bool RequireAllNpcsDie { get; set; } = False;
+        }
+
+        public class UnlootedAnnouncementSettings
+        {
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled { get; set; } = False;
+
+            [JsonProperty(PropertyName = "Notify Every X Minutes (Minimum 1)")]
+            public float Interval { get; set; } = 3f;
+        }
+
+        public class Configuration
+        {
+            [JsonProperty(PropertyName = "Settings")]
+            public PluginSettings Settings = new PluginSettings();
+
+            [JsonProperty(PropertyName = "Countdown")]
+            public CountdownSettings Countdown = new CountdownSettings();
+
+            [JsonProperty(PropertyName = "Events")]
+            public EventSettings Event = new EventSettings();
+
+            [JsonProperty(PropertyName = "Event Messages")]
+            public EventMessageSettings EventMessages = new EventMessageSettings();
+
+            [JsonProperty(PropertyName = "Fireballs")]
+            public FireballSettings Fireballs = new FireballSettings();
+
+            [JsonProperty(PropertyName = "GUIAnnouncements")]
+            public GUIAnnouncementSettings GUIAnnouncement = new GUIAnnouncementSettings();
+
+            [JsonProperty(PropertyName = "Lusty Map")]
+            public LustyMapSettings LustyMap = new LustyMapSettings();
+
+            [JsonProperty(PropertyName = "Monuments")]
+            public MonumentSettings Monuments = new MonumentSettings();
+
+            [JsonProperty(PropertyName = "Newman Mode")]
+            public NewmanModeSettings NewmanMode = new NewmanModeSettings();
+
+            [JsonProperty(PropertyName = "NPCs")]
+            public NpcSettings NPC = new NpcSettings();
+
+            [JsonProperty(PropertyName = "Missile Launcher")]
+            public MissileLauncherSettings MissileLauncher = new MissileLauncherSettings();
+
+            [JsonProperty(PropertyName = "Ranked Ladder")]
+            public RankedLadderSettings RankedLadder = new RankedLadderSettings();
+
+            [JsonProperty(PropertyName = "Rewards")]
+            public RewardSettings Rewards = new RewardSettings();
+
+            [JsonProperty(PropertyName = "Rocket Opener")]
+            public RocketOpenerSettings Rocket = new RocketOpenerSettings();
+
+            [JsonProperty(PropertyName = "Skins")]
+            public SkinSettings Skins = new SkinSettings();
+
+            [JsonProperty(PropertyName = "Treasure")]
+            public TreasureSettings Treasure = new TreasureSettings();
+
+            [JsonProperty(PropertyName = "TruePVE")]
+            public TruePVESettings TruePVE = new TruePVESettings();
+
+            [JsonProperty(PropertyName = "Unlock Time")]
+            public UnlockSettings Unlock = new UnlockSettings();
+
+            [JsonProperty(PropertyName = "Unlooted Announcements")]
+            public UnlootedAnnouncementSettings UnlootedAnnouncements = new UnlootedAnnouncementSettings();
+        }
+
+        bool configLoaded = False;
+
+        protected override void LoadConfig()
+        {
+            bool baseFailed = False;
+            base.LoadConfig();
+            try
+            {
+                Config.Load(null);
+            }
+            catch
+            {
+                baseFailed = True;
+            }
+            try
+            {
+                _config = Config.ReadObject<Configuration>();
+                if (_config == null) throw new Exception();
+            }
+            catch
+            {
+                if (!baseFailed)
+                {
+                    LoadDefaultConfig();
+                }
+                else
+                {
+                    PrintError("Your configuration file contains an error. Either delete it, or correct the error.");
+                    return;
+                }
+            }
+
+            configLoaded = True;
+
+            if (_config.Rocket.Speed > 0.1f) _config.Rocket.Speed = 0.1f;
+            if (_config.Treasure.PercentLoss > 0) _config.Treasure.PercentLoss /= 100m;
+            if (_config.Monuments.Chance < 0) _config.Monuments.Chance = 0f;
+            if (_config.Monuments.Chance > 1f) _config.Monuments.Chance /= 100f;
+            if (_config.Event.Radius < 10f) _config.Event.Radius = 10f;
+            if (_config.Event.Radius > 150f) _config.Event.Radius = 150f;
+            if (_config.MissileLauncher.Distance < 1f) _config.MissileLauncher.Distance = 15f;
+            if (_config.MissileLauncher.Distance > _config.Event.Radius * 15) _config.MissileLauncher.Distance = _config.Event.Radius * 2;
+            if (_config.LustyMap.IconFile == "special") _config.LustyMap.IconFile = "http://i.imgur.com/XoEMTJj.png";
+
+            if (!string.IsNullOrEmpty(_config.Settings.PermName) && !permission.PermissionExists(_config.Settings.PermName)) permission.RegisterPermission(_config.Settings.PermName, this);
+            if (!string.IsNullOrEmpty(_config.Settings.EventChatCommand)) cmd.AddChatCommand(_config.Settings.EventChatCommand, this, cmdDangerousTreasures);
+            if (!string.IsNullOrEmpty(_config.Settings.DistanceChatCommand)) cmd.AddChatCommand(_config.Settings.DistanceChatCommand, this, cmdTreasureHunter);
+            if (!string.IsNullOrEmpty(_config.Settings.EventConsoleCommand)) cmd.AddConsoleCommand(_config.Settings.EventConsoleCommand, this, nameof(ccmdDangerousTreasures));
+            if (string.IsNullOrEmpty(_config.RankedLadder.Permission)) _config.RankedLadder.Permission = "dangeroustreasures.th";
+            if (string.IsNullOrEmpty(_config.RankedLadder.Group)) _config.RankedLadder.Group = "treasurehunter";
+            if (string.IsNullOrEmpty(_config.LustyMap.IconFile) || string.IsNullOrEmpty(_config.LustyMap.IconName)) _config.LustyMap.Enabled = false;
+
+            if (!string.IsNullOrEmpty(_config.RankedLadder.Permission))
+            {
+                if (!permission.PermissionExists(_config.RankedLadder.Permission))
+                    permission.RegisterPermission(_config.RankedLadder.Permission, this);
+
+                if (!string.IsNullOrEmpty(_config.RankedLadder.Group))
+                {
+                    permission.CreateGroup(_config.RankedLadder.Group, _config.RankedLadder.Group, 0);
+                    permission.GrantGroupPermission(_config.RankedLadder.Group, _config.RankedLadder.Permission, this);
+                }
+            }
+
+            if (_config.UnlootedAnnouncements.Interval < 1f) _config.UnlootedAnnouncements.Interval = 1f;
+            if (_config.Event.AutoDrawDistance < 0f) _config.Event.AutoDrawDistance = 0f;
+            if (_config.Event.AutoDrawDistance > ConVar.Server.worldsize) _config.Event.AutoDrawDistance = ConVar.Server.worldsize;
+            if (_config.GUIAnnouncement.TintColor.ToLower() == "black") _config.GUIAnnouncement.TintColor = "grey";
+            if (_config.NPC.SpawnAmount < 1) _config.NPC.Enabled = false;
+            if (_config.NPC.SpawnAmount > 25) _config.NPC.SpawnAmount = 25;
+            if (_config.NPC.SpawnMinAmount < 1 || _config.NPC.SpawnMinAmount > _config.NPC.SpawnAmount) _config.NPC.SpawnMinAmount = 1;
+            if (_config.NPC.ScientistHealth < 100) _config.NPC.ScientistHealth = 100f;
+            if (_config.NPC.ScientistHealth > 5000) _config.NPC.ScientistHealth = 5000f;
+            if (_config.NPC.MurdererHealth < 100) _config.NPC.MurdererHealth = 100f;
+            if (_config.NPC.MurdererHealth > 5000) _config.NPC.MurdererHealth = 5000f;
+            if (_config.NPC.MurdererSpeedSprinting > 25) _config.NPC.MurdererSpeedSprinting = 25f;
+            if (_config.NPC.MurdererSpeedWalking < 0) _config.NPC.MurdererSpeedWalking = 0f;
+            if (_config.NPC.ScientistSpeedSprinting > 25) _config.NPC.ScientistSpeedSprinting = 25f;
+            if (_config.NPC.ScientistSpeedWalking < 0) _config.NPC.ScientistSpeedWalking = 0f;
+
+            if (_config.Treasure.UseDOWL)
+            {
+                switch (DateTime.Now.DayOfWeek)
+                {
+                    case DayOfWeek.Monday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Monday);
+                            break;
+                        }
+                    case DayOfWeek.Tuesday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Tuesday);
+                            break;
+                        }
+                    case DayOfWeek.Wednesday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Wednesday);
+                            break;
+                        }
+                    case DayOfWeek.Thursday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Thursday);
+                            break;
+                        }
+                    case DayOfWeek.Friday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Friday);
+                            break;
+                        }
+                    case DayOfWeek.Saturday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Saturday);
+                            break;
+                        }
+                    case DayOfWeek.Sunday:
+                        {
+                            SetTreasure(_config.Treasure.DOWL_Sunday);
+                            break;
+                        }
+                }
+            }
+            else
+            {
+                foreach (var ti in _config.Treasure.Loot)
+                {
+                    if (ti.shortname == "survey.charge")
+                    {
+                        ti.shortname = "surveycharge";
+                    }
+                    else if (ti.shortname == "smg.thomspon")
+                    {
+                        ti.shortname = "smg.thompson";
+                    }
+                }
+
+                SetTreasure(_config.Treasure.Loot);
+            }
+
+            SaveConfig();
+        }
+
+        void SetTreasure(List<TreasureItem> treasures)
+        {
+            chestLoot.Clear();
+            chestLoot.AddRange(treasures.ToList());
+        }
+
+        protected override void SaveConfig() => Config.WriteObject(_config);
+
+        protected override void LoadDefaultConfig() => _config = new Configuration();
+
         #endregion
     }
 }
