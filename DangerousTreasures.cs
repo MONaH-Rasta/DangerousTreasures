@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.3")]
+    [Info("Dangerous Treasures", "nivex", "1.2.4")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -40,6 +40,7 @@ namespace Oxide.Plugins
 
         static int playerMask = LayerMask.GetMask("Player (Server)");
         static int blockedMask = LayerMask.GetMask(new[] { "Player (Server)", "Trigger", "Prevent Building" });
+        static int obstructionMask = LayerMask.GetMask(new[] { "Player (Server)", "Construction" });
         static int heightMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed" });
         static int twdMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default" });
         static int twwMask = LayerMask.GetMask(new[] { "Terrain", "World", "Water" });
@@ -1425,7 +1426,10 @@ namespace Oxide.Plugins
                     {
                         if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
                         {
-                            return hit.point;
+                            if (!IsLayerBlocked(hit.point, eventRadius + 25f, obstructionMask))
+                            {
+                                return hit.point;
+                            }
                         }
                     }
                 }
@@ -1436,7 +1440,28 @@ namespace Oxide.Plugins
 
         public Vector3 GetMonumentDropPosition()
         {
-            var monument = monuments.GetRandom();
+            var list = monuments.ToList();
+
+            MonumentInfo monument = null;
+
+            while (monument == null && list.Count > 0)
+            {
+                var mon = list.GetRandom();
+
+                if (!IsLayerBlocked(mon.transform.position, eventRadius + 25f, obstructionMask))
+                {
+                    monument = mon;
+                    break;
+                }
+
+                list.Remove(mon);
+            }
+
+            if (monument == null)
+            {
+                return Vector3.zero;
+            }
+
             var entities = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && !(e is AutoTurret) && !(e is Door) && !(e is ResourceEntity) && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
 
             if (!undergroundLoot)
