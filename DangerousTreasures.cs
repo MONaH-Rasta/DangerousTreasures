@@ -16,7 +16,7 @@ using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.6")]
+    [Info("Dangerous Treasures", "nivex", "2.2.7")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -108,7 +108,7 @@ namespace Oxide.Plugins
             public StoredData() { }            
         }
 
-        public class HumanoidBrain : BaseAIBrain<global::HumanNPC>
+        public class HumanoidBrain : ScientistBrain
         {
             internal enum AttackType
             {
@@ -278,7 +278,8 @@ namespace Oxide.Plugins
             {
                 if (!Rust.Application.isQuitting)
                 {
-                    BaseEntity.Query.Server.RemoveBrain(GetEntity());                    
+                    BaseEntity.Query.Server.RemoveBrain(GetEntity());
+                    Instance?.HumanoidBrains?.Remove(uid);
                     LeaveGroup();
                 }
 
@@ -328,6 +329,7 @@ namespace Oxide.Plugins
             public class AttackState : BaseAttackState
             {
                 private new HumanoidBrain brain;
+                private global::HumanNPC npc;
 
                 private IAIAttack attack => brain.Senses.ownerAttack;
 
@@ -335,14 +337,10 @@ namespace Oxide.Plugins
                 {
                     base.brain = brain = humanoidBrain;
                     base.AgrresiveState = true;
+                    npc = brain.GetBrainBaseEntity() as global::HumanNPC;
                 }
 
-                public new global::HumanNPC GetEntity()
-                {
-                    return brain.baseEntity;
-                }
-
-                public override void StateEnter()
+                public override void StateEnter(BaseAIBrain _brain, BaseEntity _entity)
                 {
                     if (brain.ValidTarget)
                     {
@@ -361,7 +359,7 @@ namespace Oxide.Plugins
                     }
                 }
 
-                public override void StateLeave()
+                public override void StateLeave(BaseAIBrain _brain, BaseEntity _entity)
                 {
                     StopAttacking();
                 }
@@ -375,7 +373,7 @@ namespace Oxide.Plugins
                     }
                 }
 
-                public override StateStatus StateThink(float delta)
+                public override StateStatus StateThink(float delta, BaseAIBrain _brain, BaseEntity _entity)
                 {
                     if (attack == null)
                     {
@@ -430,7 +428,7 @@ namespace Oxide.Plugins
 
                     if (brain.attackType == AttackType.BaseProjectile)
                     {
-                        GetEntity().ShotTest(brain.AttackPosition.Distance(brain.ServerPosition));
+                        npc.ShotTest(brain.AttackPosition.Distance(brain.ServerPosition));
                     }
                     else if (brain.attackType == AttackType.FlameThrower)
                     {
