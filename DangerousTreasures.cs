@@ -9,10 +9,11 @@ using Oxide.Core.Plugins;
 using Rust;
 using UnityEngine;
 using System.Reflection;
+using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.0")]
+    [Info("Dangerous Treasures", "nivex", "1.2.1")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -42,10 +43,10 @@ namespace Oxide.Plugins
         static int heightMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed" });
         static int twdMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default" });
         static int twwMask = LayerMask.GetMask(new[] { "Terrain", "World", "Water" });
-        static int worldMask = LayerMask.GetMask("World");
+        static int worldMask = LayerMask.GetMask("World", "Default");
         List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree };
 
-        List<MonumentInfo> monuments = new List<MonumentInfo>(); // positions of monuments on the server
+        static List<MonumentInfo> monuments = new List<MonumentInfo>(); // positions of monuments on the server
         static List<uint> newmanProtections = new List<uint>();
         List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
         List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
@@ -248,10 +249,26 @@ namespace Oxide.Plugins
             List<Vector3> firePositions = new List<Vector3>();
             Timer destruct, unlock, countdown, announcement;
             public List<NPCPlayerApex> npcs = new List<NPCPlayerApex>();
+            List<Vector3> spawnpoints;
 
             public bool HasNPC(ulong userID)
             {
                 return npcs.Any(x => x.userID == userID);
+            }
+            
+            public Vector3 GetSpawn()
+            {
+                if (spawnpoints == null)
+                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && e.net != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f).Select(e => e.transform.position).ToList();
+
+                if (!undergroundLoot)
+                {
+                    spawnpoints.RemoveAll(sc => sc.y < containerPos.y);
+                }
+
+                var spawnpoint = spawnpoints.Count > 2 ? spawnpoints.GetRandom() : containerPos;
+                
+                return spawnpoint;
             }
 
             void Awake()
@@ -260,7 +277,7 @@ namespace Oxide.Plugins
                 containerPos = container.transform.position;
                 uid = container.net.ID;
                 lastTick = Time.time;
-
+                
                 gameObject.layer = (int)Layer.Reserved1;
                 var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
                 collider.center = Vector3.zero;
@@ -837,11 +854,15 @@ namespace Oxide.Plugins
                     Puts("Blocking events at zones: {0}", string.Join(", ", managedZones.Select(zone => string.Format("{0} ({1}: {2}m)", zone.Key.ToString().Replace("(", "").Replace(")", ""), FormatGridReference(zone.Key), zone.Value)).ToArray()));
             }
 
-            var list = new List<string> { "Quarry", "Outpost", "Sewer", "Satellite Dish", "Water Treatment Plant" };
-            monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap && !list.Any(x => info.displayPhrase.english.Contains(x))).ToList());
+            var list = new List<string>();
 
+            if (!undergroundLoot)
+                list.Add("Sewer");
+
+            monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap && !list.Any(x => info.displayPhrase.english.Contains(x))).ToList());
+            
             if (monuments.Count == 0)
-            {
+            {                
                 onlyMonuments = false;
                 allowMonumentChance = 0f;
             }
@@ -1308,6 +1329,9 @@ namespace Oxide.Plugins
             {
                 eventPos = GetSafeDropPosition(RandomDropPosition());
 
+                if (eventPos == Vector3.zero)
+                    continue;
+
                 if (Interface.CallHook("OnDangerousOpen", eventPos) != null)
                 {
                     eventPos = Vector3.zero;
@@ -1382,7 +1406,7 @@ namespace Oxide.Plugins
         public Vector3 GetMonumentDropPosition()
         {
             var monument = monuments.GetRandom();
-            var containers = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && e.net != null && e is StorageContainer && (e.ShortPrefabName.Contains("loot") || e.ShortPrefabName.Contains("crate_")) && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
+            var containers = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && e.net != null && e is StorageContainer && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
 
             if (!undergroundLoot)
             {
@@ -1391,7 +1415,8 @@ namespace Oxide.Plugins
 
             if (containers.Count < 2)
             {
-                return GetMonumentDropPosition();
+                var pos = GetGroundPosition(monument.transform.position);
+                return pos == Vector3.zero ? GetMonumentDropPosition() : pos;
             }
 
             var container = containers.GetRandom();
@@ -1652,6 +1677,14 @@ namespace Oxide.Plugins
 
             timer.Once(unlockTime + destructTime, () => RemoveMapMarker(uid));
             timer.Once(unlockTime + destructTime, () => RemoveLustyMarker(uid));
+
+            string monumentName = monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated;
+
+            if (!string.IsNullOrEmpty(monumentName) && monumentName.Contains("Bandit Camp"))
+            {
+                return position;
+            }
+
             SpawnNPCS(position, treasureChest);
 
             return position;
@@ -1662,39 +1695,19 @@ namespace Oxide.Plugins
         {
             return Facepunch.RandomUsernames.Get((int)(v % 2147483647uL));
         }
-
-        BaseEntity InstantiateSci(Vector3 position, Quaternion rotation, bool murd) //Spawn population spam fix - credit Fujikura/BotSpawn
-        {
-            string prefabname = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
-            var prefab = GameManager.server.FindPrefab(prefabname);
-            GameObject gameObject = Instantiate.GameObject(prefab, position, rotation);
-            gameObject.name = prefabname;
-            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(gameObject, Rust.Server.EntityScene);
-            if (gameObject.GetComponent<Spawnable>())
-                UnityEngine.Object.Destroy(gameObject.GetComponent<Spawnable>());
-            if (!gameObject.activeSelf)
-                gameObject.SetActive(true);
-            BaseEntity component = gameObject.GetComponent<BaseEntity>();
-            return component;
-        }
-
+        
         static void SpawnNPCS(Vector3 pos, TreasureChest chest)
         {
             if (spawnNpcsAmount < 1 || !spawnNpcs)
                 return;
 
-            var spawnpoints = GetRandomPositions(pos, eventRadius, spawnNpcsAmount, 0f);
             var rot = new Quaternion(1f, 0f, 0f, 1f);
+            int amount = spawnNpcsRandomAmount && spawnNpcsAmount > 1 ? UnityEngine.Random.Range(1, spawnNpcsAmount) : spawnNpcsAmount;
 
-            for (int i = 0; i < spawnNpcsAmount; i++)
+            for (int i = 0; i < amount; i++)
             {
-                if (spawnpoints.Count < 1)
-                    return;
-
-                var ppos = spawnpoints.GetRandom();
-                ppos.y = GetGroundPosition(ppos);
-
-                var npc = SpawnNPC(ppos, rot, spawnNpcsBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : spawnNpcsMurderers, chest);
+                var spawnpoint = chest.GetSpawn();
+                var npc = SpawnNPC(spawnpoint, rot, spawnNpcsBoth ? UnityEngine.Random.Range(0.1f, 1.0f) > 0.5f : spawnNpcsMurderers, chest);
 
                 if (npc == null)
                 {
@@ -1702,24 +1715,13 @@ namespace Oxide.Plugins
                 }
 
                 chest.npcs.Add(npc);
-                spawnpoints.Remove(ppos);
             }
         }
-
-        static float GetGroundPosition(Vector3 pos)
-        {
-            float y = TerrainMeta.HeightMap.GetHeight(pos);
-
-            RaycastHit hit;
-            if (Physics.Raycast(new Vector3(pos.x, pos.y + 200f, pos.z), Vector3.down, out hit, Mathf.Infinity, heightMask))
-                return Mathf.Max(hit.point.y, y);
-
-            return y;
-        }
-
+        
         static NPCPlayerApex SpawnNPC(Vector3 pos, Quaternion rot, bool murd, TreasureChest chest)
         {
-            var apex = ins.InstantiateSci(pos, rot, murd) as NPCPlayerApex;
+            string prefabname = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
+            var apex = GameManager.server.CreateEntity(prefabname, pos, rot, true) as NPCPlayerApex;
 
             if (apex == null)
                 return null;
@@ -1730,9 +1732,14 @@ namespace Oxide.Plugins
             apex.CommunicationRadius = 0;
             apex.GetComponent<FacepunchBehaviour>().CancelInvoke(new Action(apex.RadioChatter));
             apex.RadioEffect = new GameObjectRef();
-            apex.Stats.AggressionRange = 200f;
-            apex.Stats.VisionRange = 200f;
+            //apex.Stats.AggressionRange = 200f;
+            //apex.Stats.VisionRange = 200f;
             apex.Stats.MaxRoamRange = eventRadius;
+
+            var randomPoint = chest.containerPos + UnityEngine.Random.insideUnitSphere * (eventRadius * 0.85f);
+            
+            apex.finalDestination = randomPoint;
+            apex.Destination = randomPoint;
 
             if (spawnNpcsRandomNames)
                 apex.displayName = Get(apex.userID);
@@ -1746,24 +1753,48 @@ namespace Oxide.Plugins
             if (apex == null || apex.IsDestroyed)
                 return;
 
-            apex.finalDestination = pos;
-            apex.Destination = pos;
+            var randomPoint = chest.containerPos + UnityEngine.Random.insideUnitSphere * (eventRadius * 0.85f);
+            
+            apex.finalDestination = randomPoint;
+            apex.Destination = randomPoint;
 
             if (Vector3.Distance(apex.transform.position, pos) > eventRadius)
             {
-                var spawnpoint = GetRandomPositions(chest.containerPos, 15f, 5, 0f).GetRandom();
+                var spawnpoint = chest.GetSpawn();
 
-                spawnpoint.y = GetGroundPosition(spawnpoint);
                 apex.Pause();
+                apex.finalDestination = randomPoint;
+                apex.Destination = randomPoint;
                 apex.ServerPosition = spawnpoint;
                 apex.Resume();
+
                 ins.timer.Once(10f, () => UpdateDestination(apex, spawnpoint, chest));
                 return;
             }
 
             ins.timer.Once(10f, () => UpdateDestination(apex, pos, chest));
         }
-                
+        
+        static Vector3 GetGroundPosition(Vector3 center)
+        {
+            var spawnPoint = Vector3.zero;
+
+            for (int i = 0; i < 50; i++)
+            {
+                var randomPoint = center + UnityEngine.Random.insideUnitSphere * (eventRadius * 0.85f);
+                float y = TerrainMeta.HeightMap.GetHeight(center);
+                spawnPoint = new Vector3(randomPoint.x, y + 300f, randomPoint.z);
+
+                RaycastHit hit;
+                if (Physics.Raycast(spawnPoint, Vector3.down, out hit, y + 300f, LayerMask.GetMask("Terrain", "World", "Construction", "Deployed"), QueryTriggerInteraction.Ignore))
+                {
+                    return new Vector3(spawnPoint.x, Mathf.Max(hit.point.y, y), spawnPoint.z);
+                }
+            }
+
+            return Vector3.zero;
+        }
+        
         void CheckSecondsUntilEvent()
         {
             var eventInterval = UnityEngine.Random.Range(eventIntervalMin, eventIntervalMax);
@@ -1803,7 +1834,7 @@ namespace Oxide.Plugins
 
         public static string FormatGridReference(Vector3 position) // Credit: Jake_Rich. Fix by trixxxi (y,x -> x,y switch)
         {
-            string monumentName = ins.monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated ?? null; // request MrSmallZzy
+            string monumentName = monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated ?? null; // request MrSmallZzy
 
             if (showXZ)
             {
@@ -2453,9 +2484,10 @@ namespace Oxide.Plugins
         static bool spawnsDespawnInventory;
         static bool showXZ;
         static bool spawnNpcsRandomNames;
+        static bool spawnNpcsRandomAmount;
         bool onlyMonuments;
         float allowMonumentChance;
-        bool undergroundLoot;
+        static bool undergroundLoot;
         bool truePVE;
 
         List<object> DefaultTimesInSeconds
@@ -2963,6 +2995,8 @@ namespace Oxide.Plugins
             spawnNpcsMurderers = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers", false));
             spawnsDespawnInventory = Convert.ToBoolean(GetConfig("NPCs", "Despawn Inventory On Death", true));
             spawnNpcsRandomNames = Convert.ToBoolean(GetConfig("NPCs", "Generate Random Names", true));
+            spawnNpcsRandomAmount = Convert.ToBoolean(GetConfig("NPCs", "Spawn Random Amount", false));
+
             showXZ = Convert.ToBoolean(GetConfig("Settings", "Show X Z Coordinates", false));
 
             if (spawnNpcsAmount > 25)
