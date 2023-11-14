@@ -13,6 +13,10 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.0.5:
+    Possible fix for wipe detection
+    Possible fix for OnPlayerDeath
+
     2.0.4:
     Npc scientists are now regular scientists; configure their kits/items if you don't like their default weapon choices
 
@@ -51,12 +55,11 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.4")]
+    [Info("Dangerous Treasures", "nivex", "2.0.5")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
         [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits;
-        public static readonly FieldInfo AllScientists = typeof(Scientist).GetField("AllScientists", (BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.NonPublic));
 
         void OnPluginLoaded(Plugin plugin)
         {
@@ -271,7 +274,7 @@ namespace Oxide.Plugins
                     }
 
                     projectile.speed = _config.Rocket.Speed * rocketSpeedMulti;
-                    InvokeRepeating(new Action(GuideMissile), 0.1f, 0.1f);
+                    InvokeRepeating(GuideMissile, 0.1f, 0.1f);
                 });
             }
 
@@ -319,7 +322,7 @@ namespace Oxide.Plugins
             {
                 exclude.Clear();
                 launch?.Destroy();
-                CancelInvoke(new Action(GuideMissile));
+                CancelInvoke(GuideMissile);
                 GameObject.Destroy(this);
             }
         }
@@ -679,7 +682,7 @@ namespace Oxide.Plugins
                     firePositions = GetRandomPositions(containerPos, Radius, 25, containerPos.y + 25f);
 
                     if (firePositions.Count > 0)
-                        InvokeRepeating(new Action(SpawnFire), 0.1f, _config.Fireballs.SecondsBeforeTick);
+                        InvokeRepeating(SpawnFire, 0.1f, _config.Fireballs.SecondsBeforeTick);
                 }
 
                 if (useMissileLauncher)
@@ -688,7 +691,7 @@ namespace Oxide.Plugins
 
                     if (missilePositions.Count > 0)
                     {
-                        InvokeRepeating(new Action(LaunchMissile), 0.1f, _config.MissileLauncher.Frequency);
+                        InvokeRepeating(LaunchMissile, 0.1f, _config.MissileLauncher.Frequency);
                         LaunchMissile();
                     }
                 }
@@ -954,9 +957,6 @@ namespace Oxide.Plugins
                 apex.CancelInvoke(apex.EquipTest);
                 apex.CancelInvoke(apex.RadioChatter);
 
-                //if (!murd && AllScientists != null) // this fix also prevents HasAllyInLineOfFire from working which requires OnNpcTarget
-                    //AllScientists.SetValue(apex as Scientist, new HashSet<Scientist>()); // Steenamaroo fix for NPCPlayerApex.OnAiQuestion NullReferenceException #2
-
                 apex.startHealth = murd ? _config.NPC.MurdererHealth : _config.NPC.ScientistHealth;
                 apex.InitializeHealth(apex.startHealth, apex.startHealth);
                 apex.CommunicationRadius = 0;
@@ -964,9 +964,9 @@ namespace Oxide.Plugins
                 apex.displayName = _config.NPC.RandomNames.Count > 0 ? _config.NPC.RandomNames.GetRandom() : DangerousTreasures.Get(apex.userID);
                 if (!murd) apex.GetComponent<Scientist>().LootPanelName = apex.displayName;
 
-                Invoke(new Action(() => EquipNpc(apex, murd)), 0.1f);
+                Invoke(() => EquipNpc(apex, murd), 0.1f);
 
-                apex.Invoke(new Action(() =>
+                apex.Invoke(() =>
                 {
                     var heldEntity = apex.GetHeldEntity();
 
@@ -976,7 +976,7 @@ namespace Oxide.Plugins
                     }
 
                     apex.EquipWeapon();
-                }), 2f);
+                }, 2f);
 
                 if (_config.NPC.DespawnInventory)
                 {
@@ -990,7 +990,7 @@ namespace Oxide.Plugins
                 apex.SpawnPosition = containerPos;
                 apex.Stats.MaxRoamRange = 75f;
 
-                Invoke(new Action(() => UpdateDestination(apex, containerPos, murd)), 0.25f);
+                ins.timer.Once(0.25f, () => UpdateDestination(apex, containerPos, murd));
                 return apex;
             }
 
@@ -1092,7 +1092,7 @@ namespace Oxide.Plugins
                 }
                 //else apex.clothingMoveSpeedReduction = 0f;
 
-                Invoke(new Action(() => UpdateDestination(apex, pos, murd)), 2f);
+                ins.timer.Once(2f, () => UpdateDestination(apex, pos, murd));
             }
 
             public void UpdateMarker()
@@ -1406,7 +1406,7 @@ namespace Oxide.Plugins
                 {
                     foreach (var npc in npcs.ToList())
                     {
-                        if (npc == null || npc.IsDestroyed)
+                        if (!npc.IsValid() || npc.IsDestroyed)
                         {
                             npcs.Remove(npc);
                             continue;
@@ -1418,7 +1418,7 @@ namespace Oxide.Plugins
                             continue;
                         }
 
-                        if (npc != null && npc.IsAlive())
+                        if (npc.IsAlive())
                         {
                             ins.timer.Once(1f, () => Unlock());
                             return;
@@ -1426,8 +1426,10 @@ namespace Oxide.Plugins
                     }
                 }
 
-                container.SetFlag(BaseEntity.Flags.Locked, false);
-                container.SetFlag(BaseEntity.Flags.OnFire, false);
+                if (container.HasFlag(BaseEntity.Flags.Locked))
+                    container.SetFlag(BaseEntity.Flags.Locked, false);
+                if (container.HasFlag(BaseEntity.Flags.OnFire))
+                    container.SetFlag(BaseEntity.Flags.OnFire, false);
             }
 
             public void SetUnlockTime(float time)
@@ -1472,7 +1474,7 @@ namespace Oxide.Plugins
             {
                 if (missilePositions.Count > 0)
                 {
-                    CancelInvoke(new Action(LaunchMissile));
+                    CancelInvoke(LaunchMissile);
                     missilePositions.Clear();
                 }
 
@@ -1504,7 +1506,7 @@ namespace Oxide.Plugins
 
             public void DestroyFire()
             {
-                CancelInvoke(new Action(SpawnFire));
+                CancelInvoke(SpawnFire);
                 firePositions.Clear();
 
                 if (fireballs.Count > 0)
@@ -1578,6 +1580,14 @@ namespace Oxide.Plugins
                 sd_customPos = storedData.CustomPosition.ToVector3();
             else
                 sd_customPos = Vector3.zero;
+
+            if (!wipeChestsSeed && BuildingManager.server.buildingDictionary.Count == 0)
+            {
+                if (storedData.Players.Count > 0 && storedData.Players.Values.Any(pi => pi.StolenChestsSeed > 0))
+                {
+                    wipeChestsSeed = true;
+                }
+            }
 
             if (wipeChestsSeed)
             {
@@ -1801,11 +1811,11 @@ namespace Oxide.Plugins
                     return True;
                 }
             }
-            else if (p1 && target is BaseNpc)
+            else if (p1 && target.IsNpc)
             {
                 return TreasureChest.HasNPC(p1.userID) ? (object)True : null;
             }
-            else if (p2 && npc is BaseNpc)
+            else if (p2 && npc.IsNpc)
             {
                 return TreasureChest.HasNPC(p2.userID) ? (object)True : null;
             }
@@ -1815,7 +1825,7 @@ namespace Oxide.Plugins
 
         void OnPlayerDeath(BasePlayer player)
         {
-            if (!init || !player || !player.IsNpc)
+            if (!init || !player.IsValid() || !player.IsNpc)
                 return;
 
             var chest = TreasureChest.GetNPC(player.userID);
