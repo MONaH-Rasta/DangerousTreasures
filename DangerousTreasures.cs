@@ -13,10 +13,13 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
-    2.0.2:
+    2.0.3:
+	Re-added border around markers
+	
+	2.0.2:
     Fireballs no longer spawn on flying players
     Added TreasureHunter message to lang api
-    Removed settings to adjust npc movement speed
+    Removed settings to adjust npc movement speed as it was causing some servers to crash
     Increased MarkerManager marker size
 
     2.0.1:
@@ -45,7 +48,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.2")]
+    [Info("Dangerous Treasures", "nivex", "2.0.3")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -110,12 +113,18 @@ namespace Oxide.Plugins
         SpawnFilter filter = new SpawnFilter();
         ItemDefinition boxDef;
         static ItemDefinition rocketDef;
-        const string boxShortname = "box.wooden.large";
+        string boxShortname;
         const string fireRocketShortname = "ammo.rocket.fire";
         const string basicRocketShortname = "ammo.rocket.basic";
-        const string boxPrefab = "assets/prefabs/deployable/large wood storage/box.wooden.large.prefab";
+        string boxPrefab;
         const string spherePrefab = "assets/prefabs/visualization/sphere.prefab";
         const string fireballPrefab = "assets/bundled/prefabs/oilfireballsmall.prefab";
+        static string radiusMarkerPrefab;
+        static string scientistPrefab;
+        static string peacekeeperPrefab;
+        static string murdererPrefab;
+        static string vendingPrefab;
+        static string explosionPrefab;
         static string rocketResourcePath;
         DynamicConfigFile dataFile;
         static StoredData storedData = new StoredData();
@@ -900,7 +909,7 @@ namespace Oxide.Plugins
             NPCPlayerApex InstantiateEntity(Vector3 position, bool murd)
             {
                 bool pk = true;
-                var name = murd ? "assets/prefabs/npc/murderer/murderer.prefab" : pk ? "assets/prefabs/npc/scientist/scientistpeacekeeper.prefab" : "assets/prefabs/npc/scientist/scientist.prefab";
+                var name = murd ? murdererPrefab : pk ? peacekeeperPrefab : scientistPrefab;
                 var prefab = GameManager.server.FindPrefab(name);
                 var gameObject = Facepunch.Instantiate.GameObject(prefab, position, default(Quaternion));
 
@@ -1132,17 +1141,28 @@ namespace Oxide.Plugins
                 //explosionmarker cargomarker ch47marker cratemarker
                 if (_config.Event.MarkerExplosion)
                 {
-                    explosionMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/explosionmarker.prefab", containerPos, Quaternion.identity, true) as MapMarkerExplosion;
+                    explosionMarker = GameManager.server.CreateEntity(explosionPrefab, containerPos, Quaternion.identity, true) as MapMarkerExplosion;
 
                     if (explosionMarker != null)
                     {
                         explosionMarker.Spawn();
                         explosionMarker.SendMessage("SetDuration", 60, SendMessageOptions.DontRequireReceiver);
                     }
+					
+					genericMarker = GameManager.server.CreateEntity(radiusMarkerPrefab, containerPos) as MapMarkerGenericRadius;
+
+					if (genericMarker != null)
+					{
+						genericMarker.alpha = 0.75f;
+						genericMarker.color2 = Color.red;
+						genericMarker.radius = 0.25f;
+						genericMarker.Spawn();
+						genericMarker.SendUpdate();
+					}
                 }
                 else if (_config.Event.MarkerVending)
                 {
-                    vendingMarker = GameManager.server.CreateEntity("assets/prefabs/deployable/vendingmachine/vending_mapmarker.prefab", containerPos) as VendingMachineMapMarker;
+                    vendingMarker = GameManager.server.CreateEntity(vendingPrefab, containerPos) as VendingMachineMapMarker;
 
                     if (vendingMarker != null)
                     {
@@ -1150,6 +1170,17 @@ namespace Oxide.Plugins
                         vendingMarker.markerShopName = _config.Event.MarkerName;
                         vendingMarker.Spawn();
                     }
+					
+					genericMarker = GameManager.server.CreateEntity(radiusMarkerPrefab, containerPos) as MapMarkerGenericRadius;
+
+					if (genericMarker != null)
+					{
+						genericMarker.alpha = 0.75f;
+						genericMarker.color2 = Color.red;
+						genericMarker.radius = 0.25f;
+						genericMarker.Spawn();
+						genericMarker.SendUpdate();
+					}
                 }
 
                 markerCreated = true;
@@ -1515,6 +1546,15 @@ namespace Oxide.Plugins
             unloading = False;
             ins = this;
             dataFile = Interface.Oxide.DataFileSystem.GetFile(Name);
+
+            boxShortname = StringPool.Get(2735448871);
+            boxPrefab = StringPool.Get(2206646561);
+            radiusMarkerPrefab = StringPool.Get(2849728229);
+            peacekeeperPrefab = StringPool.Get(686888238);
+            scientistPrefab = StringPool.Get(4223875851);
+            murdererPrefab = StringPool.Get(3879041546);
+            vendingPrefab = StringPool.Get(3459945130);
+            explosionPrefab = StringPool.Get(4060989661);
 
             try
             {
