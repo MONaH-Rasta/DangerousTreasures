@@ -16,7 +16,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.3")]
+    [Info("Dangerous Treasures", "nivex", "2.3.4")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -1098,28 +1098,21 @@ namespace Oxide.Plugins
 
             private void Free()
             {
-                ResetToPool(fireballs);
-                ResetToPool(newmans);
-                ResetToPool(traitors);
-                ResetToPool(protects);
-                ResetToPool(missiles);
-                ResetToPool(times);
-                ResetToPool(spheres);
-                ResetToPool(missilePositions);
-                ResetToPool(firePositions);
-                ResetToPool(npcKits);
+                fireballs.ResetToPool();
+                newmans.ResetToPool();
+                traitors.ResetToPool();
+                protects.ResetToPool();
+                missiles.ResetToPool();
+                times.ResetToPool();
+                spheres.ResetToPool();
+                missilePositions.ResetToPool();
+                firePositions.ResetToPool();
+                npcKits.ResetToPool();
 
                 destruct?.Destroy();
                 unlock?.Destroy();
                 countdown?.Destroy();
                 announcement?.Destroy();
-            }
-
-            private void ResetToPool<T>(ICollection<T> collection)
-            {
-                collection.Clear();
-
-                Pool.Free(ref collection);
             }
 
             private class NewmanTracker : FacepunchBehaviour
@@ -2768,6 +2761,8 @@ namespace Oxide.Plugins
                                 Message(looter, "ServerRewardPoints", (int)config.Rewards.Points);
                             }
                         }
+
+                        Interface.CallHook("OnDangerousEventWon", looter);
                     }
 
                     RemoveLustyMarker(box.net.ID);
@@ -5898,5 +5893,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static string ObjectName(this BaseEntity entity) { try { return entity.name ?? string.Empty; } catch { return string.Empty; } }
         public static T GetRandom<T>(this HashSet<T> h) { if (h == null || h.Count == 0) { return default(T); } return h.ElementAt(UnityEngine.Random.Range(0, h.Count)); }
         public static float Distance(this Vector3 a, Vector3 b) => (a - b).magnitude;
+        public static void ResetToPool<K, V>(this Dictionary<K, V> collection) { collection.Clear(); Pool.Free(ref collection); }
+        public static void ResetToPool<T>(this List<T> collection) { collection.Clear(); Pool.Free(ref collection); }
     }
 }
