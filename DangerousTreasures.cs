@@ -13,17 +13,9 @@ using Rust.Ai;
 using Facepunch;
 using System.Globalization;
 
-//https://umod.org/community/dangerous-treasures/36922-adding-daily-limit-for-dtd-events?page=1#post-2
-/*
-BLACKLISTED SETTINGS HAVE BEEN RESET
-Blacklist will now include all monuments on your map by default
-Added more checks to prevent npcs in rocks
-Fixed damage to npcs
-*/
-
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.4")]
+    [Info("Dangerous Treasures", "nivex", "2.2.5")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -815,7 +807,7 @@ namespace Oxide.Plugins
             {
                 if (container.IsValid())
                 {
-                    container.dropChance = 0f;
+                    container.dropsLoot = false;
 
                     if (!container.IsDestroyed)
                     {
@@ -1949,6 +1941,8 @@ namespace Oxide.Plugins
                 float radius = GetMonumentFloat(name);
                 monuments[name] = new MonInfo() { Position = monument.transform.position, Radius = radius };
                                 
+                if (string.IsNullOrEmpty(monument.displayPhrase.english.Trim())) continue;
+
                 if (!_config.NPC.BlacklistedMonuments.ContainsKey(monument.displayPhrase.english.Trim()))
                 {
                     _config.NPC.BlacklistedMonuments.Add(monument.displayPhrase.english.Trim(), false);
@@ -1974,6 +1968,8 @@ namespace Oxide.Plugins
 
                 string value = name.Trim();
 
+                if (string.IsNullOrEmpty(value)) continue;
+
                 if (!_config.Monuments.Blacklist.ContainsKey(value))
                 {
                     _config.Monuments.Blacklist.Add(value, false);
@@ -1996,13 +1992,15 @@ namespace Oxide.Plugins
             if (_config.Monuments.Blacklist.Count != BlacklistCount || _config.NPC.BlacklistedMonuments.Count != BlacklistedMonumentsCount)
             {
                 var blacklist = _config.Monuments.Blacklist.ToList();
-
+                
+                blacklist.RemoveAll(x => string.IsNullOrEmpty(x.Key));
                 blacklist.Sort((x, y) => x.Key.CompareTo(y.Key));
 
                 _config.Monuments.Blacklist = blacklist.ToDictionary(x => x.Key, x => x.Value);
 
                 var npcblacklist = _config.NPC.BlacklistedMonuments.ToList();
 
+                npcblacklist.RemoveAll(x => string.IsNullOrEmpty(x.Key));
                 npcblacklist.Sort((x, y) => x.Key.CompareTo(y.Key));
 
                 _config.NPC.BlacklistedMonuments = npcblacklist.ToDictionary(x => x.Key, x => x.Value);
@@ -3173,9 +3171,6 @@ namespace Oxide.Plugins
                         skinsCache[def.shortname].Add(skin);
                     }
                 }
-
-                skins.Clear();
-                skins = null;
             }
 
             return skinsCache[def.shortname];
