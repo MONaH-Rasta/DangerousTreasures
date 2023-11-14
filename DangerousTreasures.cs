@@ -11,58 +11,50 @@ using UnityEngine.SceneManagement;
 using System.Text;
 using System.Globalization;
 using Rust.Ai;
+using Facepunch;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.0")]
+    [Info("Dangerous Treasures", "nivex", "2.2.1")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
         [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits, NPCKits, Duelist, RaidableBases;
 
-        static bool useRockets;
-        static bool useRandomSkins;
-        static bool useSpheres;
-        static bool useMissileLauncher;
-        static bool useFireballs;
-        const bool True = true;
-        const bool False = false;
-        static DangerousTreasures ins;
-        static bool unloading = false;
-        bool init = false;
-        bool wipeChestsSeed = false;
-        SpawnFilter filter = new SpawnFilter();
-        ItemDefinition boxDef;
-        static ItemDefinition rocketDef;
-        string boxShortname;
-        const string fireRocketShortname = "ammo.rocket.fire";
-        const string basicRocketShortname = "ammo.rocket.basic";
-        string boxPrefab;
-        const string spherePrefab = "assets/prefabs/visualization/sphere.prefab";
-        const string fireballPrefab = "assets/bundled/prefabs/oilfireballsmall.prefab";
-        static string radiusMarkerPrefab;
-        static string scientistPrefab;
-        static string murdererPrefab;
-        static string vendingPrefab;
-        static string explosionPrefab;
-        static string rocketResourcePath;
-        static StoredData storedData = new StoredData();
-        Vector3 sd_customPos;
-        Timer eventTimer;
-
-        static int treeLayer = LayerMask.GetMask("Tree");
-        static int worldLayer = LayerMask.GetMask("World");
-        static int waterLayer = LayerMask.GetMask("Water");
-        int deployableLayer = LayerMask.GetMask("Deployed");
-        static int playerLayer = LayerMask.GetMask("Player (Server)");
-        int obstructionLayer = LayerMask.GetMask("Player (Server)", "Construction", "Deployed", "Clutter");
-        static int heightLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed", "Clutter");
-        List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
-        //int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed");
-        int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default"); //already checked
-
-        static Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
-        static Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();  // positions of monuments on the server
+        private static DangerousTreasures ins;
+        private static bool unloading = false;
+        private bool useRockets;
+        private bool useRandomSkins;
+        private bool useSpheres;
+        private bool useMissileLauncher;
+        private bool useFireballs;
+        private const bool True = true;
+        private const bool False = false;
+        private bool init;
+        private bool wipeChestsSeed;
+        private SpawnFilter filter = new SpawnFilter();
+        private ItemDefinition boxDef;
+        private ItemDefinition rocketDef;
+        private const string fireRocketShortname = "ammo.rocket.fire";
+        private const string basicRocketShortname = "ammo.rocket.basic";
+        private const uint boxPrefabID = 2206646561;
+        private const uint boxShortnameID = 2735448871;
+        private const uint sphereID = 3211242734;
+        private const uint fireballPrefabID = 3550347674;
+        private const uint radiusMarkerID = 2849728229;
+        private const uint scientistID = 4223875851;
+        private const uint murdererID = 3879041546;
+        private const uint vendingPrefabID = 3459945130;
+        private const uint explosionPrefabID = 4060989661;
+        private string rocketResourcePath;
+        private StoredData storedData = new StoredData();
+        private Vector3 sd_customPos;
+        private Timer eventTimer;
+        private const int obstructionLayer = Layers.Mask.Player_Server | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter;
+        private const int heightLayer = Layers.Mask.Terrain | Layers.Mask.World | Layers.Mask.Default | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter;
+        private List<int> BlockedLayers = new List<int> { Layers.Mask.Water, Layers.Mask.Construction, Layers.Mask.Trigger, Layers.Mask.Prevent_Building, Layers.Mask.Deployed, Layers.Mask.Tree, Layers.Mask.Clutter };
+        private Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
+        private Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();  // positions of monuments on the server
 
         public class ZoneInfo
         {
@@ -72,24 +64,24 @@ namespace Oxide.Plugins
             public OBB OBB;
         }
 
-        class MonInfo
+        private class MonInfo
         {
             public Vector3 Position;
             public float Radius;
         }
 
-        static List<uint> newmanProtections = new List<uint>();
-        List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
-        List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
-        Dictionary<Vector3, ZoneInfo> managedZones = new Dictionary<Vector3, ZoneInfo>();
-        static Dictionary<uint, MapInfo> mapMarkers = new Dictionary<uint, MapInfo>();
-        static Dictionary<uint, string> lustyMarkers = new Dictionary<uint, string>();
-        Dictionary<string, List<ulong>> skinsCache = new Dictionary<string, List<ulong>>();
-        Dictionary<string, List<ulong>> workshopskinsCache = new Dictionary<string, List<ulong>>();
-        static Dictionary<uint, TreasureChest> treasureChests = new Dictionary<uint, TreasureChest>();
-        static Dictionary<uint, string> looters = new Dictionary<uint, string>();
+        private List<uint> newmanProtections = new List<uint>();
+        private List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
+        private List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
+        private Dictionary<Vector3, ZoneInfo> managedZones = new Dictionary<Vector3, ZoneInfo>();
+        private Dictionary<uint, MapInfo> mapMarkers = new Dictionary<uint, MapInfo>();
+        private Dictionary<uint, string> lustyMarkers = new Dictionary<uint, string>();
+        private Dictionary<string, List<ulong>> skinsCache = new Dictionary<string, List<ulong>>();
+        private Dictionary<string, List<ulong>> workshopskinsCache = new Dictionary<string, List<ulong>>();
+        private Dictionary<uint, TreasureChest> treasureChests = new Dictionary<uint, TreasureChest>();
+        private Dictionary<uint, string> looters = new Dictionary<uint, string>();
 
-        class MapInfo
+        private class MapInfo
         {
             public string Url;
             public string IconName;
@@ -98,14 +90,14 @@ namespace Oxide.Plugins
             public MapInfo() { }
         }
 
-        class PlayerInfo
+        private class PlayerInfo
         {
             public int StolenChestsTotal { get; set; } = 0;
             public int StolenChestsSeed { get; set; } = 0;
             public PlayerInfo() { }
         }
 
-        class StoredData
+        private class StoredData
         {
             public double SecondsUntilEvent = double.MinValue;
             public int TotalEvents = 0;
@@ -115,18 +107,18 @@ namespace Oxide.Plugins
             public StoredData() { }
         }
 
-        class GuidanceSystem : FacepunchBehaviour
+        private class GuidanceSystem : FacepunchBehaviour
         {
-            TimedExplosive missile;
-            ServerProjectile projectile;
-            BaseEntity target;
-            float rocketSpeedMulti = 2f;
-            Timer launch;
-            Vector3 launchPos;
-            List<ulong> exclude = new List<ulong>();
+            private TimedExplosive missile;
+            private ServerProjectile projectile;
+            private BaseEntity target;
+            private float rocketSpeedMulti = 2f;
+            private Timer launch;
+            private Vector3 launchPos;
+            private List<ulong> exclude = new List<ulong>();
             public bool targetChest;
 
-            void Awake()
+            private void Awake()
             {
                 missile = GetComponent<TimedExplosive>();
                 projectile = missile.GetComponent<ServerProjectile>();
@@ -162,7 +154,7 @@ namespace Oxide.Plugins
 
                     var list = new List<BasePlayer>();
                     var entities = new List<BaseEntity>();
-                    Vis.Entities<BaseEntity>(launchPos, _config.Event.Radius + _config.MissileLauncher.Distance, entities, playerLayer, QueryTriggerInteraction.Ignore);
+                    Vis.Entities(launchPos, _config.Event.Radius + _config.MissileLauncher.Distance, entities, Layers.Mask.Player_Server, QueryTriggerInteraction.Ignore);
 
                     foreach (var entity in entities)
                     {
@@ -174,7 +166,7 @@ namespace Oxide.Plugins
                         if (_config.MissileLauncher.IgnoreFlying && player.IsFlying)
                             continue;
 
-                        if (exclude.Contains(player.userID) || newmanProtections.Contains(player.net.ID))
+                        if (exclude.Contains(player.userID) || ins.newmanProtections.Contains(player.net.ID))
                             continue;
 
                         list.Add(player); // acquire a player target 
@@ -209,7 +201,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            void GuideMissile()
+            private void GuideMissile()
             {
                 if (target == null)
                     return;
@@ -240,7 +232,7 @@ namespace Oxide.Plugins
                 projectile.InitializeVelocity(direction); // guide the missile to the target's position
             }
 
-            void OnDestroy()
+            private void OnDestroy()
             {
                 exclude.Clear();
                 launch?.Destroy();
@@ -249,47 +241,47 @@ namespace Oxide.Plugins
             }
         }
 
-        public class TreasureChest : FacepunchBehaviour
+        private class TreasureChest : FacepunchBehaviour
         {
             public StorageContainer container;
             public bool started;
             public bool opened;
-            long _unlockTime;
-            public Vector3 containerPos;
-            public uint uid;
-            public int countdownTime;
-            float posMulti = 3f;
-            float sphereMulti = 2f;
-            float claimTime;
-            Vector3 lastFirePos;
-            bool firstEntered;
-            bool markerCreated;
-            string zoneName;
-
-            Dictionary<ulong, float> fireticks = new Dictionary<ulong, float>();
-            List<FireBall> fireballs = new List<FireBall>();
-            List<ulong> newmans = new List<ulong>();
-            List<ulong> traitors = new List<ulong>();
-            List<uint> protects = new List<uint>();
-            List<ulong> players = new List<ulong>();
-            List<TimedExplosive> missiles = new List<TimedExplosive>();
-            List<int> times = new List<int>();
-            List<SphereEntity> spheres = new List<SphereEntity>();
-            List<Vector3> missilePositions = new List<Vector3>();
-            List<Vector3> firePositions = new List<Vector3>();
-            Timer destruct, unlock, countdown, announcement;
-            public List<NPCPlayerApex> npcs = new List<NPCPlayerApex>();
-            MapMarkerExplosion explosionMarker;
-            MapMarkerGenericRadius genericMarker;
-            VendingMachineMapMarker vendingMarker;
-            int npcSpawnedAmount;
-            bool npcsSpawned;
-            bool killed = False;
-            bool requireAllNpcsDie;
+            private bool firstEntered;
+            private bool markerCreated;
+            private bool npcsSpawned;
+            private bool killed;
+            private bool requireAllNpcsDie;
             public bool whenNpcsDie;
-            float _radius;
-            Dictionary<string, List<string>> npcKits = new Dictionary<string, List<string>>();
+            private float posMulti = 3f;
+            private float sphereMulti = 2f;
+            private float claimTime;
+            private float _radius;
+            private long _unlockTime;
+            public Vector3 containerPos;
+            private Vector3 lastFirePos;
+            private string zoneName;
+            private int npcSpawnedAmount;
+            public int countdownTime;
+            public uint uid;
 
+            private Dictionary<string, List<string>> npcKits = Pool.Get<Dictionary<string, List<string>>>();
+            private Dictionary<ulong, float> fireticks = Pool.Get<Dictionary<ulong, float>>();
+            private List<FireBall> fireballs = Pool.GetList<FireBall>();
+            private List<ulong> newmans = Pool.GetList<ulong>();
+            private List<ulong> traitors = Pool.GetList<ulong>();
+            private List<uint> protects = Pool.GetList<uint>();
+            private List<ulong> players = Pool.GetList<ulong>();
+            private List<TimedExplosive> missiles = Pool.GetList<TimedExplosive>();
+            private List<int> times = Pool.GetList<int>();
+            private List<SphereEntity> spheres = Pool.GetList<SphereEntity>();
+            private List<Vector3> missilePositions = Pool.GetList<Vector3>();
+            private List<Vector3> firePositions = Pool.GetList<Vector3>();
+            public List<NPCPlayerApex> npcs = Pool.GetList<NPCPlayerApex>();
+            private Timer destruct, unlock, countdown, announcement;
+            private MapMarkerExplosion explosionMarker;
+            private MapMarkerGenericRadius genericMarker;
+            private VendingMachineMapMarker vendingMarker;
+            
             public float Radius
             {
                 get
@@ -303,7 +295,33 @@ namespace Oxide.Plugins
                 }
             }
 
-            class NewmanTracker : FacepunchBehaviour
+            private void Free()
+            {
+                ResetToPool(fireballs);
+                ResetToPool(newmans);
+                ResetToPool(traitors);
+                ResetToPool(protects);
+                ResetToPool(missiles);
+                ResetToPool(times);
+                ResetToPool(spheres);
+                ResetToPool(missilePositions);
+                ResetToPool(firePositions);
+                ResetToPool(npcKits);
+
+                destruct?.Destroy();
+                unlock?.Destroy();
+                countdown?.Destroy();
+                announcement?.Destroy();
+            }
+
+            private void ResetToPool<T>(ICollection<T> collection)
+            {
+                collection.Clear();
+
+                Pool.Free(ref collection);
+            }
+
+            private class NewmanTracker : FacepunchBehaviour
             {
                 BasePlayer player;
                 TreasureChest chest;
@@ -344,10 +362,10 @@ namespace Oxide.Plugins
                                 chest.newmans.Add(player.userID);
                             }
 
-                            if (_config.NewmanMode.Harm && !newmanProtections.Contains(player.net.ID) && !chest.protects.Contains(player.net.ID) && !chest.traitors.Contains(player.userID))
+                            if (_config.NewmanMode.Harm && !ins.newmanProtections.Contains(player.net.ID) && !chest.protects.Contains(player.net.ID) && !chest.traitors.Contains(player.userID))
                             {
                                 player.ChatMessage(ins.msg("Newman Protect", player.UserIDString));
-                                newmanProtections.Add(player.net.ID);
+                                ins.newmanProtections.Add(player.net.ID);
                                 chest.protects.Add(player.net.ID);
                             }
 
@@ -359,21 +377,18 @@ namespace Oxide.Plugins
 
                         if (chest.newmans.Contains(player.userID))
                         {
-                            player.ChatMessage(ins.msg(useFireballs ? "Newman Traitor Burn" : "Newman Traitor", player.UserIDString));
+                            player.ChatMessage(ins.msg(ins.useFireballs ? "Newman Traitor Burn" : "Newman Traitor", player.UserIDString));
                             chest.newmans.Remove(player.userID);
 
                             if (!chest.traitors.Contains(player.userID))
                                 chest.traitors.Add(player.userID);
 
-                            if (newmanProtections.Contains(player.net.ID))
-                                newmanProtections.Remove(player.net.ID);
-
-                            if (chest.protects.Contains(player.net.ID))
-                                chest.protects.Remove(player.net.ID);
+                            ins.newmanProtections.Remove(player.net.ID);
+                            chest.protects.Remove(player.net.ID);
                         }
                     }
 
-                    if (!useFireballs || player.IsFlying)
+                    if (!ins.useFireballs || player.IsFlying)
                     {
                         return;
                     }
@@ -396,52 +411,6 @@ namespace Oxide.Plugins
                 {
                     CancelInvoke(Track);
                     Destroy(this);
-                }
-            }
-
-            void Free()
-            {
-                fireticks.Clear();
-                fireticks = null;
-                fireballs.Clear();
-                fireballs = null;
-                newmans.Clear();
-                newmans = null;
-                traitors.Clear();
-                traitors = null;
-                protects.Clear();
-                protects = null;
-                missiles.Clear();
-                missiles = null;
-                times.Clear();
-                times = null;
-                spheres.Clear();
-                spheres = null;
-                missilePositions.Clear();
-                missilePositions = null;
-                firePositions.Clear();
-                firePositions = null;
-                npcKits.Clear();
-                npcKits = null;
-
-                if (destruct != null)
-                {
-                    destruct.Destroy();
-                }
-
-                if (unlock != null)
-                {
-                    unlock.Destroy();
-                }
-
-                if (countdown != null)
-                {
-                    countdown.Destroy();
-                }
-
-                if (announcement != null)
-                {
-                    announcement.Destroy();
                 }
             }
 
@@ -474,7 +443,7 @@ namespace Oxide.Plugins
 
             public static bool HasNPC(ulong userID)
             {
-                foreach (var x in treasureChests.Values)
+                foreach (var x in ins.treasureChests.Values)
                 {
                     foreach (var npc in x.npcs)
                     {
@@ -490,7 +459,7 @@ namespace Oxide.Plugins
 
             public static bool IsTooFar(ulong userID)
             {
-                foreach (var x in treasureChests.Values)
+                foreach (var x in ins.treasureChests.Values)
                 {
                     foreach (var npc in x.npcs)
                     {
@@ -506,7 +475,7 @@ namespace Oxide.Plugins
 
             public static TreasureChest GetNPC(ulong userID)
             {
-                foreach (var x in treasureChests.Values)
+                foreach (var x in ins.treasureChests.Values)
                 {
                     foreach (var npc in x.npcs)
                     {
@@ -520,11 +489,11 @@ namespace Oxide.Plugins
                 return null;
             }
 
-            public static TreasureChest Get(Vector3 target, float f = 15f)
+            public static TreasureChest Get(Vector3 target)
             {
-                foreach (var x in treasureChests.Values)
+                foreach (var x in ins.treasureChests.Values)
                 {
-                    if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius + f)
+                    if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius)
                     {
                         return x;
                     }
@@ -538,7 +507,7 @@ namespace Oxide.Plugins
                 bool flag1 = False;
                 bool flag2 = False;
                 
-                foreach (var chest in treasureChests.Values)
+                foreach (var chest in ins.treasureChests.Values)
                 {
                     foreach (var npc in chest.npcs)
                     {
@@ -571,7 +540,7 @@ namespace Oxide.Plugins
                 {
                     for (int i = 0; i < _config.Event.SphereAmount; i++)
                     {
-                        var sphere = GameManager.server.CreateEntity(spherePrefab, containerPos, new Quaternion(), true) as SphereEntity;
+                        var sphere = GameManager.server.CreateEntity(StringPool.Get(sphereID), containerPos) as SphereEntity;
 
                         if (sphere != null)
                         {
@@ -582,20 +551,20 @@ namespace Oxide.Plugins
                         }
                         else
                         {
-                            ins.Puts(_("Invalid Constant", null, spherePrefab));
-                            useSpheres = false;
+                            ins.Puts(_("Invalid Constant", null, sphereID));
+                            ins.useSpheres = false;
                             break;
                         }
                     }
                 }
 
-                if (useRockets)
+                if (ins.useRockets)
                 {
                     var positions = GetRandomPositions(containerPos, Radius * posMulti, _config.Rocket.Amount, 0f);
 
                     foreach (var position in positions)
                     {
-                        var missile = GameManager.server.CreateEntity(rocketResourcePath, position, new Quaternion(), true) as TimedExplosive;
+                        var missile = GameManager.server.CreateEntity(ins.rocketResourcePath, position, new Quaternion(), true) as TimedExplosive;
                         var gs = missile.gameObject.AddComponent<GuidanceSystem>();
 
                         gs.SetTarget(container, true);
@@ -605,7 +574,7 @@ namespace Oxide.Plugins
                     positions.Clear();
                 }
 
-                if (useFireballs)
+                if (ins.useFireballs)
                 {
                     firePositions = GetRandomPositions(containerPos, Radius, 25, containerPos.y + 25f);
 
@@ -613,7 +582,7 @@ namespace Oxide.Plugins
                         InvokeRepeating(SpawnFire, 0.1f, _config.Fireballs.SecondsBeforeTick);
                 }
 
-                if (useMissileLauncher)
+                if (ins.useMissileLauncher)
                 {
                     missilePositions = GetRandomPositions(containerPos, Radius, 25, 1);
 
@@ -728,7 +697,12 @@ namespace Oxide.Plugins
 
                 var player = col.ToBaseEntity() as BasePlayer;
 
-                if (!player || player.IsNpc || players.Contains(player.userID))
+                if (!player || player.IsNpc)
+                    return;
+
+                Interface.CallHook("OnPlayerEnteredDangerousEvent", player, containerPos, _config.TruePVE.AllowPVPAtEvents);
+
+                if (players.Contains(player.userID))
                     return;
 
                 if (_config.EventMessages.FirstEntered && !firstEntered)
@@ -742,7 +716,7 @@ namespace Oxide.Plugins
                 {
                     key = whenNpcsDie && npcsSpawned ? "Npc Event" : requireAllNpcsDie && npcsSpawned ? "Timed Npc Event" : "Timed Event";
                 }
-                else key = useFireballs ? "Dangerous Zone Protected" : "Dangerous Zone Unprotected";
+                else key = ins.useFireballs ? "Dangerous Zone Protected" : "Dangerous Zone Unprotected";
 
                 Message(player, ins.msg(key, player.UserIDString));
 
@@ -760,6 +734,9 @@ namespace Oxide.Plugins
                 if (!player)
                     return;
 
+                if (!player.IsNpc)
+                    Interface.CallHook("OnPlayerExitedDangerousEvent", player, containerPos, _config.TruePVE.AllowPVPAtEvents);
+
                 if (player.IsNpc && npcs.Contains(player))
                 {
                     var apex = player as NPCPlayerApex;
@@ -776,7 +753,7 @@ namespace Oxide.Plugins
 
                 if (protects.Contains(player.net.ID))
                 {
-                    newmanProtections.Remove(player.net.ID);
+                    ins.newmanProtections.Remove(player.net.ID);
                     protects.Remove(player.net.ID);
                     Message(player, ins.msg("Newman Protect Fade", player.UserIDString));
                 }
@@ -842,7 +819,6 @@ namespace Oxide.Plugins
                 return new Vector3(target.x, y, target.z);
             }
 
-
             void ResetNpc(NPCPlayerApex apex)
             {
                 var position = FindPointOnNavmesh();
@@ -858,7 +834,7 @@ namespace Oxide.Plugins
 
             NPCPlayerApex InstantiateEntity(Vector3 position, bool murd)
             {
-                var name = murd ? murdererPrefab : scientistPrefab;
+                var name = StringPool.Get(murd ? murdererID : scientistID);
                 var prefab = GameManager.server.FindPrefab(name);
                 var gameObject = Facepunch.Instantiate.GameObject(prefab, position, default(Quaternion));
 
@@ -1102,7 +1078,7 @@ namespace Oxide.Plugins
 
                 int markerCount = 0;
 
-                foreach (var e in treasureChests.Values)
+                foreach (var e in ins.treasureChests.Values)
                 {
                     if (e.HasRustMarker && ++markerCount > 10)
                     {
@@ -1113,7 +1089,7 @@ namespace Oxide.Plugins
                 //explosionmarker cargomarker ch47marker cratemarker
                 if (_config.Event.MarkerExplosion)
                 {
-                    explosionMarker = GameManager.server.CreateEntity(explosionPrefab, containerPos, Quaternion.identity, true) as MapMarkerExplosion;
+                    explosionMarker = GameManager.server.CreateEntity(StringPool.Get(explosionPrefabID), containerPos, Quaternion.identity, true) as MapMarkerExplosion;
 
                     if (explosionMarker != null)
                     {
@@ -1121,7 +1097,7 @@ namespace Oxide.Plugins
                         explosionMarker.SendMessage("SetDuration", 60, SendMessageOptions.DontRequireReceiver);
                     }
 
-                    genericMarker = GameManager.server.CreateEntity(radiusMarkerPrefab, containerPos) as MapMarkerGenericRadius;
+                    genericMarker = GameManager.server.CreateEntity(StringPool.Get(radiusMarkerID), containerPos) as MapMarkerGenericRadius;
 
                     if (genericMarker != null)
                     {
@@ -1134,7 +1110,7 @@ namespace Oxide.Plugins
                 }
                 else if (_config.Event.MarkerVending)
                 {
-                    vendingMarker = GameManager.server.CreateEntity(vendingPrefab, containerPos) as VendingMachineMapMarker;
+                    vendingMarker = GameManager.server.CreateEntity(StringPool.Get(vendingPrefabID), containerPos) as VendingMachineMapMarker;
 
                     if (vendingMarker != null)
                     {
@@ -1143,7 +1119,7 @@ namespace Oxide.Plugins
                         vendingMarker.Spawn();
                     }
 
-                    genericMarker = GameManager.server.CreateEntity(radiusMarkerPrefab, containerPos) as MapMarkerGenericRadius;
+                    genericMarker = GameManager.server.CreateEntity(StringPool.Get(radiusMarkerID), containerPos) as MapMarkerGenericRadius;
 
                     if (genericMarker != null)
                     {
@@ -1195,11 +1171,11 @@ namespace Oxide.Plugins
             {
                 Kill();
 
-                if (treasureChests.ContainsKey(uid))
+                if (ins != null && ins.treasureChests.ContainsKey(uid))
                 {
-                    treasureChests.Remove(uid);
+                    ins.treasureChests.Remove(uid);
 
-                    if (!unloading && treasureChests.Count == 0) // 0.1.21 - nre fix
+                    if (!unloading && ins.treasureChests.Count == 0) // 0.1.21 - nre fix
                     {
                         ins.SubscribeHooks(false);
                     }
@@ -1210,10 +1186,10 @@ namespace Oxide.Plugins
 
             public void LaunchMissile()
             {
-                if (string.IsNullOrEmpty(rocketResourcePath))
-                    useMissileLauncher = false;
+                if (string.IsNullOrEmpty(ins.rocketResourcePath))
+                    ins.useMissileLauncher = false;
 
-                if (!useMissileLauncher)
+                if (!ins.useMissileLauncher)
                 {
                     DestroyLauncher();
                     return;
@@ -1227,11 +1203,11 @@ namespace Oxide.Plugins
                 if (Physics.Raycast(missilePos, Vector3.down, out hit, heightLayer)) // don't want the missile to explode before it leaves its spawn location
                     missilePos.y = Mathf.Max(hit.point.y, y);
 
-                var missile = GameManager.server.CreateEntity(rocketResourcePath, missilePos, new Quaternion(), true) as TimedExplosive;
+                var missile = GameManager.server.CreateEntity(ins.rocketResourcePath, missilePos) as TimedExplosive;
 
                 if (!missile)
                 {
-                    useMissileLauncher = false;
+                    ins.useMissileLauncher = false;
                     DestroyLauncher();
                     return;
                 }
@@ -1262,7 +1238,7 @@ namespace Oxide.Plugins
 
             void SpawnFire(Vector3 firePos)
             {
-                if (!useFireballs)
+                if (!ins.useFireballs)
                     return;
 
                 if (fireballs.Count >= 6) // limit fireballs
@@ -1277,12 +1253,12 @@ namespace Oxide.Plugins
                     }
                 }
 
-                var fireball = GameManager.server.CreateEntity(fireballPrefab, firePos, new Quaternion(), true) as FireBall;
+                var fireball = GameManager.server.CreateEntity(StringPool.Get(fireballPrefabID), firePos) as FireBall;
 
                 if (fireball == null)
                 {
-                    ins.Puts(_("Invalid Constant", null, fireballPrefab));
-                    useFireballs = false;
+                    ins.Puts(_("Invalid Constant", null, fireballPrefabID));
+                    ins.useFireballs = false;
                     CancelInvoke(SpawnFire);
                     firePositions.Clear();
                     return;
@@ -1487,7 +1463,7 @@ namespace Oxide.Plugins
                     fireballs.Clear();
                 }
 
-                newmanProtections.RemoveAll(x => protects.Contains(x));
+                ins.newmanProtections.RemoveAll(x => protects.Contains(x));
                 traitors.Clear();
                 newmans.Clear();
                 protects.Clear();
@@ -1500,24 +1476,12 @@ namespace Oxide.Plugins
         {
             ins = this;
             SubscribeHooks(false);
+            Unsubscribe(nameof(Unload));
         }
 
         void OnServerInitialized()
         {
-            if (!configLoaded)
-            {
-                Puts("Failed to load config; exiting OnServerInitialized hook");
-                return;
-            }
-
             unloading = False;
-            boxShortname = StringPool.Get(2735448871);
-            boxPrefab = StringPool.Get(2206646561);
-            radiusMarkerPrefab = StringPool.Get(2849728229);
-            scientistPrefab = StringPool.Get(4223875851);
-            murdererPrefab = StringPool.Get(3879041546);
-            vendingPrefab = StringPool.Get(3459945130);
-            explosionPrefab = StringPool.Get(4060989661);
 
             try
             {
@@ -1558,17 +1522,10 @@ namespace Oxide.Plugins
                 ins.Puts(_("Invalid Constant", null, _config.Rocket.FireRockets ? fireRocketShortname : basicRocketShortname));
                 useRockets = false;
             }
-            else
-                rocketResourcePath = rocketDef.GetComponent<ItemModProjectile>().projectileObject.resourcePath;
+            else rocketResourcePath = rocketDef.GetComponent<ItemModProjectile>().projectileObject.resourcePath;
 
-            boxDef = ItemManager.FindItemDefinition(boxShortname);
-
-            if (!boxDef)
-            {
-                Puts(_("Invalid Constant", null, boxShortname));
-                useRandomSkins = false;
-            }
-            else useRandomSkins = _config.Skins.RandomSkins;
+            boxDef = ItemManager.FindItemDefinition(StringPool.Get(boxShortnameID));
+            useRandomSkins = _config.Skins.RandomSkins;
 
             BlockZoneManagerZones();
             monuments.Clear();
@@ -1611,6 +1568,7 @@ namespace Oxide.Plugins
             }
 
             init = true;
+            Subscribe(nameof(Unload));
             RemoveAllTemporaryMarkers();
 
             if (_config.Skins.RandomWorkshopSkins || _config.Treasure.RandomWorkshopSkins) SetWorkshopIDs(); // webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
@@ -1705,9 +1663,6 @@ namespace Oxide.Plugins
 
         void Unload()
         {
-            if (!init)
-                return;
-
             unloading = True;
 
             foreach (var chest in treasureChests.Values)
@@ -1743,16 +1698,18 @@ namespace Oxide.Plugins
             workshopskinsCache.Clear();
             RemoveAllTemporaryMarkers();
             newmanProtections.Clear();
+            ins = null;
+            _config = null;
         }
 
         object canTeleport(BasePlayer player)
         {
-            return init && EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
+            return EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
         }
 
         object CanTeleport(BasePlayer player)
         {
-            return init && EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
+            return EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
         }
 
         object CanBradleyApcTarget(BradleyAPC apc, NPCPlayerApex npc)
@@ -1787,7 +1744,7 @@ namespace Oxide.Plugins
 
             return null;
         }
-
+        
         object OnNpcTarget(BasePlayer player, BasePlayer target)
         {
             if (!player.IsValid() || !target.IsValid())
@@ -1828,33 +1785,39 @@ namespace Oxide.Plugins
 
         void OnPlayerDeath(NPCPlayerApex player)
         {
-            if (!init || !player.IsValid())
+            if (player == null)
                 return;
 
             var chest = TreasureChest.GetNPC(player.userID);
 
-            if (chest != null)
+            if (chest == null)
             {
-                player.svActiveItemID = 0;
-                player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
-                if (_config.NPC.DespawnInventory) player.inventory.Strip();
+                return;
+            }
 
-                if (chest.whenNpcsDie && chest.npcs.Count <= 1)
+            player.svActiveItemID = 0;
+            player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+
+            if (_config.NPC.DespawnInventory)
+            {
+                player.inventory.Strip();
+            }
+
+            if (chest.whenNpcsDie && chest.npcs.Count <= 1)
+            {
+                NextTick(() =>
                 {
-                    NextTick(() =>
+                    if (chest != null)
                     {
-                        if (chest != null)
-                        {
-                            chest.Unlock();
-                        }
-                    });
-                }
+                        chest.Unlock();
+                    }
+                });
             }
         }
 
         void OnEntitySpawned(BaseNetworkable entity)
         {
-            if (!init || entity == null || entity.transform == null)
+            if (entity == null || entity.transform == null)
                 return;
 
             if (entity is BaseLock)
@@ -1931,47 +1894,47 @@ namespace Oxide.Plugins
 
         void OnLootEntity(BasePlayer player, BoxStorage container)
         {
-            if (!init || !player || !container.IsValid() || !treasureChests.ContainsKey(container.net.ID))
+            if (player == null || !container.IsValid() || !treasureChests.ContainsKey(container.net.ID))
                 return;
 
             if (player.isMounted)
             {
                 Message(player, msg("CannotBeMounted", player.UserIDString));
-                NextTick(player.EndLooting);
+                player.Invoke(player.EndLooting, 0.1f);
                 return;
             }
             else looters[container.net.ID] = player.UserIDString;
 
-            if (_config.EventMessages.FirstOpened)
+            if (!_config.EventMessages.FirstOpened)
             {
-                var chest = treasureChests[container.net.ID];
+                return;
+            }
 
-                if (!chest.opened)
-                {
-                    chest.opened = true;
-                    var posStr = FormatGridReference(container.transform.position);
+            var chest = treasureChests[container.net.ID];
 
-                    foreach (var target in BasePlayer.activePlayerList)
-                        Message(target, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
-                }
+            if (chest.opened)
+            {
+                return;
+            }
+
+            chest.opened = true;
+            var posStr = FormatGridReference(container.transform.position);
+
+            foreach (var target in BasePlayer.activePlayerList)
+            {
+                Message(target, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
             }
         }
 
         bool IsOnSameTeam(ulong playerId, ulong targetId)
         {
-            RelationshipManager.PlayerTeam team1;
-            if (!RelationshipManager.ServerInstance.playerToTeam.TryGetValue(playerId, out team1))
+            RelationshipManager.PlayerTeam team;
+            if (RelationshipManager.ServerInstance.playerToTeam.TryGetValue(playerId, out team))
             {
-                return false;
+                return team.members.Contains(targetId);
             }
 
-            RelationshipManager.PlayerTeam team2;
-            if (!RelationshipManager.ServerInstance.playerToTeam.TryGetValue(targetId, out team2))
-            {
-                return false;
-            }
-
-            return team1.teamID == team2.teamID;
+            return false;
         }
 
         void OnItemRemovedFromContainer(ItemContainer container, Item item)
@@ -2106,7 +2069,7 @@ namespace Oxide.Plugins
                         return True;
                     }
 
-                    if (EventTerritory(attacker.transform.position) && _config.TruePVE.AllowBuildingDamageAtEvents) // 1.3.3
+                    if (EventTerritory(attacker.transform.position) && _config.TruePVE.AllowBuildingDamageAtEvents && entity.name.Contains("building")) // 1.3.3
                     {
                         return True;
                     }
@@ -2131,11 +2094,11 @@ namespace Oxide.Plugins
             return entity is AutoTurret || entity is BearTrap || entity is FlameTurret || entity is Landmine || entity is GunTrap || entity is ReactiveTarget || entity.name.Contains("spikes.floor") || entity is FireBall;
         }
 
-        bool EventTerritory(Vector3 target, float f = 10f)
+        bool EventTerritory(Vector3 target)
         {
             foreach (var x in treasureChests.Values)
             {
-                if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius + f)
+                if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius)
                 {
                     return true;
                 }
@@ -2146,7 +2109,7 @@ namespace Oxide.Plugins
 
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo hitInfo)
         {
-            if (!init || !entity.IsValid() || hitInfo == null)
+            if (!entity.IsValid() || hitInfo == null)
                 return;
 
             bool isNewman = newmanProtections.Contains(entity.net.ID);
@@ -2183,7 +2146,6 @@ namespace Oxide.Plugins
                 hitInfo.damageTypes = new DamageTypeList(); // don't hurt a player when the shot misses
                 hitInfo.DidHit = False;
                 hitInfo.DoHitEffects = False;
-                hitInfo.HitEntity = null;
                 return;
             }
 
@@ -2194,9 +2156,25 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (hitInfo.hasDamage && !attacker.IsValid() && !(hitInfo.Initiator is AutoTurret)) // make npc's immune to fire/explosions/other
+            if (_config.NPC.Range > 0f && hitInfo.ProjectileDistance > _config.NPC.Range)
             {
                 hitInfo.damageTypes = new DamageTypeList();
+                hitInfo.DidHit = False;
+                hitInfo.DoHitEffects = False;
+            }
+            else if (hitInfo.hasDamage && !attacker.IsValid() && !(hitInfo.Initiator is AutoTurret)) // make npc's immune to fire/explosions/other
+            {
+                hitInfo.damageTypes = new DamageTypeList();
+                hitInfo.DidHit = False;
+                hitInfo.DoHitEffects = False;
+            }
+            else if (_config.NPC.MurdererHeadshot && hitInfo.isHeadshot && npc is NPCMurderer)
+            {
+                npc.Die(hitInfo);
+            }
+            else if (_config.NPC.MurdererHeadshot && hitInfo.isHeadshot && npc is Scientist)
+            {
+                npc.Die(hitInfo);
             }
             else
             {   
@@ -2520,13 +2498,27 @@ namespace Oxide.Plugins
             return false;
         }
 
+        private bool IsSafeZone(Vector3 position)
+        {
+            var colliders = Pool.GetList<Collider>();
+            Vis.Colliders(position, 0.1f, colliders);
+            bool isSafeZone = colliders.Any(collider => collider.name.Contains("SafeZone"));
+            Pool.FreeList(ref colliders);
+            return isSafeZone;
+        }
+
         public Vector3 GetSafeDropPosition(Vector3 position)
         {
             RaycastHit hit;
             position.y += 200f;
 
-            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightLayer, QueryTriggerInteraction.Ignore))
+            if (Physics.Raycast(position, Vector3.down, out hit, position.y, heightLayer | Layers.Mask.Trigger, QueryTriggerInteraction.Collide))
             {
+                if (IsSafeZone(hit.point))
+                {
+                    return Vector3.zero;
+                }
+                
                 if (!BlockedLayers.Contains(hit.collider.gameObject.layer))
                 {
                     position.y = Mathf.Max(hit.point.y, TerrainMeta.HeightMap.GetHeight(position));
@@ -2572,6 +2564,11 @@ namespace Oxide.Plugins
                         RaycastHit hit;
                         if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightLayer, QueryTriggerInteraction.Ignore))
                         {
+                            if (IsSafeZone(hit.point))
+                            {
+                                continue;
+                            }
+
                             if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
                             {
                                 if (!IsLayerBlocked(hit.point, _config.Event.Radius + 25f, obstructionLayer))
@@ -2687,7 +2684,7 @@ namespace Oxide.Plugins
             {
                 var skins = def.skins.Select(skin => Convert.ToUInt64(skin.id)).ToList();
 
-                if ((def.shortname == boxShortname && _config.Skins.RandomWorkshopSkins) || (def.shortname != boxShortname && _config.Treasure.RandomWorkshopSkins))
+                if ((def.shortname == boxDef.shortname && _config.Skins.RandomWorkshopSkins) || (def.shortname != boxDef.shortname && _config.Treasure.RandomWorkshopSkins))
                 {
                     if (workshopskinsCache.ContainsKey(def.shortname))
                     {
@@ -2747,7 +2744,7 @@ namespace Oxide.Plugins
                 eventPos = randomPos;
             }
 
-            var container = GameManager.server.CreateEntity(boxPrefab, eventPos, new Quaternion(), true) as StorageContainer;
+            var container = GameManager.server.CreateEntity(StringPool.Get(boxPrefabID), eventPos, new Quaternion(), true) as StorageContainer;
 
             if (container == null)
             {
@@ -2979,58 +2976,70 @@ namespace Oxide.Plugins
             switch (name)
             {
                 case "Abandoned Cabins":
-                    return 24f + 30f;
+                    return 54f;
                 case "Abandoned Supermarket":
                     return 50f;
                 case "Airfield":
                     return 200f;
                 case "Bandit Camp":
-                    return 100f + 25f;
-                case "Cave":
+                    return 125f;
+                case "Barn":
+                case "Large Barn":
                     return 75f;
+                case "Fishing Village":
+                case "Large Fishing Village":
+                    return 50f;
+                case "Junkyard":
+                    return 125f;
                 case "Giant Excavator Pit":
-                    return 200f + 25f;
+                    return 225f;
                 case "Harbor":
-                    return 100f + 50f;
+                    return 150f;
                 case "HQM Quarry":
-                    return 27.5f + 10f;
+                    return 37.5f;
+                case "Ice Lake":
+                    return 50f;
                 case "Large Oil Rig":
                     return 200f;
                 case "Launch Site":
-                    return 200f + 100f;
+                    return 300f;
                 case "Lighthouse":
-                    return 24f + 24f;
+                    return 48f;
                 case "Military Tunnel":
                     return 100f;
                 case "Mining Outpost":
-                    return 25f + 15f;
+                    return 45f;
                 case "Oil Rig":
                     return 100f;
                 case "Outpost":
-                    return 100f + 25f;
+                    return 250f;
                 case "Oxum's Gas Station":
-                    return 50f + 15f;
+                    return 65f;
                 case "Power Plant":
-                    return 100f + 40f;
+                    return 140f;
                 case "power_sub_small_1":
                 case "power_sub_small_2":
                 case "power_sub_big_1":
                 case "power_sub_big_2":
                     return 30f;
+                case "Ranch":
+                    return 75f;
                 case "Satellite Dish":
-                    return 75f + 15f;
+                    return 90f;
                 case "Sewer Branch":
-                    return 75f + 25f;
+                    return 100f;
                 case "Stone Quarry":
                     return 27.5f;
                 case "Sulfur Quarry":
                     return 27.5f;
                 case "The Dome":
-                    return 50f + 20f;
+                    return 70f;
                 case "Train Yard":
-                    return 100 + 50f;
+                    return 150f;
+                case "Underwater Lab":
+                    return 65f;
                 case "Water Treatment Plant":
-                    return 100f + 85f;
+                    return 185f;
                 case "Water Well":
                     return 24f;
                 case "Wild Swamp":
@@ -3079,11 +3088,11 @@ namespace Oxide.Plugins
             eventTimer = timer.Once(1f, () => CheckSecondsUntilEvent());
         }
 
-        public static string FormatGridReference(Vector3 position) // Using native Rust method
+        public static string FormatGridReference(Vector3 position)
         {
             string monumentName = null;
 
-            foreach (var x in monuments)  // request MrSmallZzy
+            foreach (var x in ins.monuments)  // request MrSmallZzy
             {
                 if ((x.Value.Position - position).magnitude <= x.Value.Radius)
                 {
@@ -3560,7 +3569,7 @@ namespace Oxide.Plugins
                 if (position == Vector3.zero)
                     arg.ReplyWith(msg("Manual Event Failed", player?.UserIDString));
                 else
-                    ins.Puts(_("Invalid Constant", null, boxPrefab + " : Command()"));
+                    ins.Puts(_("Invalid Constant", null, boxPrefabID + " : Command()"));
             }
 
             if (num > 1)
@@ -4271,6 +4280,15 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Enabled")]
             public bool Enabled { get; set; } = True;
 
+            [JsonProperty(PropertyName = "Block Damage From Players Beyond X Distance (0 = disabled)")]
+            public float Range { get; set; } = 0f;
+
+            [JsonProperty(PropertyName = "Murderers Die Instantly From Headshots")]
+            public bool MurdererHeadshot { get; set; } 
+
+            [JsonProperty(PropertyName = "Scientists Die Instantly From Headshots")]
+            public bool ScientistHeadshot { get; set; } 
+
             [JsonProperty(PropertyName = "Scientist Weapon Accuracy (0 - 100)")]
             public float Accuracy { get; set; } = 75f;
 
@@ -4565,44 +4583,27 @@ namespace Oxide.Plugins
             public UnlootedAnnouncementSettings UnlootedAnnouncements = new UnlootedAnnouncementSettings();
         }
 
-        bool configLoaded = False;
         private const string notitlePermission = "dangeroustreasures.notitle";
 
         protected override void LoadConfig()
         {
-            bool baseFailed = False;
             base.LoadConfig();
             try
             {
-                Config.Load(null);
-            }
-            catch (Exception ex)
-            {
-                Puts(ex.ToString());
-                baseFailed = True;
-            }
-            try
-            {
                 _config = Config.ReadObject<Configuration>();
+                if (_config == null) throw new Exception();
+                ValidateConfig();
+                SaveConfig();
             }
             catch (Exception ex)
             {
-                if (!baseFailed)
-                {
-                    Puts("Loading default configuration");
-                    Puts(ex.ToString());
-                    return;
-                    LoadDefaultConfig();
-                }
-                else
-                {
-                    PrintError("Your configuration file contains an error. Either delete it, or correct the error.");
-                    return;
-                }
+                Debug.LogException(ex);
+                LoadDefaultConfig();
             }
+        }
 
-            configLoaded = True;
-
+        private void ValidateConfig()
+        {
             if (_config.Rocket.Speed > 0.1f) _config.Rocket.Speed = 0.1f;
             if (_config.Treasure.PercentLoss > 0) _config.Treasure.PercentLoss /= 100m;
             if (_config.Monuments.Chance < 0) _config.Monuments.Chance = 0f;
@@ -4652,8 +4653,6 @@ namespace Oxide.Plugins
             if (_config.NPC.ScientistSpeedSprinting > 2.5f) _config.NPC.ScientistSpeedSprinting = 2.5f;
             if (_config.NPC.ScientistSpeedWalking < 0) _config.NPC.ScientistSpeedWalking = 0f;
             if (_config.NPC.ScientistSpeedWalking > 2.5) _config.NPC.ScientistSpeedWalking = 2.5f;*/
-
-            SaveConfig();
         }
 
         List<TreasureItem> ChestLoot
