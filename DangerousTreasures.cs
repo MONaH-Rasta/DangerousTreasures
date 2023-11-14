@@ -12,7 +12,7 @@ using System.Reflection;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.9")]
+    [Info("Dangerous Treasures", "nivex", "1.3.0")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -38,13 +38,9 @@ namespace Oxide.Plugins
         Vector3 sd_customPos;
 
         static int playerMask = LayerMask.GetMask("Player (Server)");
-        static int blockedMask = LayerMask.GetMask(new[] { "Player (Server)", "Trigger", "Prevent Building" });
-        static int obstructionMask = LayerMask.GetMask(new[] { "Player (Server)", "Construction" });
-        static int heightMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed" });
-        static int twdMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default" });
-        static int twwMask = LayerMask.GetMask(new[] { "Terrain", "World", "Water" });
-        static int worldMask = LayerMask.GetMask("World", "Default");
-        List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree };
+        static int obstructionMask = LayerMask.GetMask(new[] { "Player (Server)", "Construction", "Deployed", "Clutter" });
+        static int heightMask = LayerMask.GetMask(new[] { "Terrain", "World", "Default", "Construction", "Deployed", "Clutter" });
+        List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
 
         static List<MonumentInfo> monuments = new List<MonumentInfo>(); // positions of monuments on the server
         static List<uint> newmanProtections = new List<uint>();
@@ -113,7 +109,7 @@ namespace Oxide.Plugins
                 launchPos.y = TerrainMeta.HeightMap.GetHeight(launchPos);
 
                 projectile.gravityModifier = 0f;
-                projectile.speed = 5f;
+                projectile.speed = 0.1f;
                 projectile.InitializeVelocity(Vector3.up);
 
                 missile.explosionRadius = 0f;
@@ -226,10 +222,11 @@ namespace Oxide.Plugins
         class TreasureChest : FacepunchBehaviour
         {
             public StorageContainer container;
-            public bool started = false;
+            public bool started;
+            public bool opened;
             long _unlockTime;
             public Vector3 containerPos;
-            uint uid;
+            public uint uid;
             int countdownTime;
             float posMulti = 3f;
             float sphereMulti = 2f;
@@ -326,7 +323,14 @@ namespace Oxide.Plugins
                     var positions = GetRandomPositions(containerPos, eventRadius * posMulti, numRockets, 0f);
 
                     foreach (var position in positions)
-                        CreateRocket(position, containerPos, Vector3.down);
+                    {
+                        var missile = GameManager.server.CreateEntity(rocketResourcePath, position, new Quaternion(), true) as TimedExplosive;
+                        var gs = missile.gameObject.AddComponent<GuidanceSystem>();
+
+                        gs.Exclude(newmans);
+                        gs.SetTarget(container);
+                        //CreateRocket(position, containerPos, Vector3.down);
+                    }
 
                     positions.Clear();
                 }
@@ -366,8 +370,7 @@ namespace Oxide.Plugins
                     firstEntered = true;
                     string eventPos = FormatGridReference(containerPos);
 
-                    foreach (var target in BasePlayer.activePlayerList)
-                        target.ChatMessage(ins.msg("OnFirstPlayerEntered", target.UserIDString, target.displayName, eventPos));
+                    ins.PrintToChat(ins.msg("OnFirstPlayerEntered", null, player.displayName, eventPos));
                 }
 
                 player.ChatMessage(ins.msg(useFireballs ? szProtected : szUnprotected, player.UserIDString));
@@ -600,6 +603,14 @@ namespace Oxide.Plugins
 
             public void Destruct()
             {
+                if (showDestructMsg)
+                {
+                    var posStr = FormatGridReference(containerPos);
+
+                    foreach (var target in BasePlayer.activePlayerList)
+                        SendDangerousMessage(target, containerPos, ins.msg("OnChestDespawned", target.UserIDString, posStr));
+                }
+
                 unlock?.Destroy();
                 destruct?.Destroy();
 
@@ -646,8 +657,7 @@ namespace Oxide.Plugins
                         container.SetFlag(BaseEntity.Flags.OnFire, false);
 
                     if (showStarted)
-                        foreach (var target in BasePlayer.activePlayerList)
-                            SendDangerousMessage(target, containerPos, ins.msg(szEventStarted, target.UserIDString, posStr));
+                        ins.PrintToChat(ins.msg(szEventStarted, null, posStr));
 
                     if (destructTime > 0f)
                         destruct = ins.timer.Once(destructTime, () => Destruct());
@@ -712,25 +722,33 @@ namespace Oxide.Plugins
 
             public void DestroySphere()
             {
-                foreach (var sphere in spheres)
-                    if (sphere != null && !sphere.IsDestroyed)
-                        sphere.Kill();
+                if (spheres.Count > 0)
+                {
+                    foreach (var sphere in spheres)
+                    {
+                        if (sphere != null && !sphere.IsDestroyed)
+                        {
+                            sphere.Kill();
+                        }
+                    }
+
+                    spheres.Clear();
+                }
             }
 
             public void DestroyFire()
             {
-                if (firePositions.Count > 0)
-                {
-                    CancelInvoke(new Action(SpawnFire));
-                    firePositions.Clear();
-                }
+                CancelInvoke(new Action(SpawnFire));
+                firePositions.Clear();
 
                 if (useFireballs)
                 {
                     foreach (var fireball in fireballs)
                     {
                         if (fireball != null && !fireball.IsDestroyed)
+                        {
                             fireball.Kill();
+                        }
                     }
 
                     fireballs.Clear();
@@ -874,7 +892,7 @@ namespace Oxide.Plugins
 
             if (!undergroundLoot)
                 blacklistedMonuments.Add("Sewer");
-            
+
             monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap).ToList());
 
             if (monuments.Count == 0)
@@ -886,9 +904,10 @@ namespace Oxide.Plugins
             {
                 foreach (var m in monuments.ToList())
                 {
-                    if (blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
+                    if (m.displayPhrase.english.Contains("Oil Rig") || blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
                     {
                         monuments.Remove(m);
+                        //Puts("---" + m.displayPhrase.english);
                     }
                 }
             }
@@ -1093,6 +1112,20 @@ namespace Oxide.Plugins
                 looters.Remove(entity.net.ID);
 
             looters.Add(entity.net.ID, player.UserIDString);
+
+            if (showOpenedMsg)
+            {
+                var chest = treasureChests[entity.net.ID];
+
+                if (!chest.opened)
+                {
+                    chest.opened = true;
+                    var posStr = FormatGridReference(entity.transform.position);
+
+                    foreach (var target in BasePlayer.activePlayerList)
+                        SendDangerousMessage(target, entity.transform.position, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
+                }
+            }
         }
 
         void OnItemRemovedFromContainer(ItemContainer container, Item item)
@@ -1230,10 +1263,13 @@ namespace Oxide.Plugins
             if (npc == null || !treasureChests.Values.Any(x => x.HasNPC(npc.userID)))
                 return;
 
-            if (hitInfo.hasDamage && hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Heat) // make npc's immune to fire
+            if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions
             {
-                hitInfo.damageTypes = new DamageTypeList();
-                return;
+                if (hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Explosion || hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Heat)
+                {
+                    hitInfo.damageTypes = new DamageTypeList();
+                    return;
+                }
             }
         }
 
@@ -1275,39 +1311,6 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(CanBuild));
                 Unsubscribe(nameof(OnPlayerDie));
             }
-        }
-
-        static void CreateRocket(Vector3 rocketPos, Vector3 targetPos, Vector3 offset)
-        {
-            if (!useRocketOpener || rocketDef == null)
-                return;
-
-            var rocket = GameManager.server.CreateEntity(rocketResourcePath, rocketPos, new Quaternion(), true) as TimedExplosive;
-
-            if (!rocket)
-            {
-                ins.Puts(ins.msg(szInvalidConstant, null, "Rocket Creation"));
-                useRocketOpener = false;
-                return;
-            }
-
-            var projectile = rocket.GetComponent<ServerProjectile>();
-            var direction = (targetPos - rocketPos) + offset;
-
-            projectile.gravityModifier = 0f;
-            projectile.speed = rocketSpeed;
-            projectile.InitializeVelocity(direction);
-
-            rocket.timerAmountMin = 10f;
-            rocket.timerAmountMax = 20f;
-            //rocket.damageTypes = new List<DamageTypeEntry>(); // no damage
-
-            foreach (var type in rocket.damageTypes)
-            {
-                type.amount = rocketDamageAmount;
-            }
-
-            rocket.Spawn();
         }
 
         static List<Vector3> GetRandomPositions(Vector3 destination, float radius, int amount, float y)
@@ -1879,7 +1882,7 @@ namespace Oxide.Plugins
                 Puts(msg(szAutomated, null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
                 Puts(msg(szFirstTimeUse));
                 SaveData();
-                return;
+                return;                
             }
 
             if (storedData.SecondsUntilEvent - stamp <= 0)
@@ -2234,7 +2237,7 @@ namespace Oxide.Plugins
                     string name = covalence.Players.FindPlayerById(kvp.Key)?.Name ?? kvp.Key;
                     string value = kvp.Value.ToString("N0");
 
-                    player.ChatMessage(string.Format("<color=lightblue>{0}</color>. <color=silver>{1}</color> (<color=yellow>{2}</color>)", ++rank, name, value));
+                    player.ChatMessage(string.Format("<color=#ADD8E6>{0}</color>. <color=#C0C0C0>{1}</color> (<color=#FFFF00>{2}</color>)", ++rank, name, value));
 
                     if (rank >= 10)
                         break;
@@ -2585,6 +2588,8 @@ namespace Oxide.Plugins
         bool truePVEAllowPVPAtEvents;
         bool truePVEServerWidePVP;
         static bool showFirstEntered;
+        static bool showDestructMsg;
+        static bool showOpenedMsg;
         static List<string> randomNames = new List<string>();
 
         List<object> DefaultTimesInSeconds
@@ -2665,16 +2670,16 @@ namespace Oxide.Plugins
                     {"en", "You do not have permission to use this command."},
                 }},
                 {szBuildingBlocked, new Dictionary<string, string>() {
-                    {"en", "<color=red>Building is blocked near treasure chests!</color>"},
+                    {"en", "<color=#FF0000>Building is blocked near treasure chests!</color>"},
                 }},
                 {szMaxManualEvents, new Dictionary<string, string>() {
-                    {"en", "Maximum number of manual events <color=red>{0}</color> has been reached!"},
+                    {"en", "Maximum number of manual events <color=#FF0000>{0}</color> has been reached!"},
                 }},
                 {szProtected, new Dictionary<string, string>() {
-                    {"en", "<color=red>You have entered a dangerous zone protected by a fire aura! You must leave before you die!</color>"},
+                    {"en", "<color=#FF0000>You have entered a dangerous zone protected by a fire aura! You must leave before you die!</color>"},
                 }},
                 {szUnprotected, new Dictionary<string, string>() {
-                    {"en", "<color=red>You have entered a dangerous zone!</color>"},
+                    {"en", "<color=#FF0000>You have entered a dangerous zone!</color>"},
                 }},
                 {szEventFail, new Dictionary<string, string>() {
                     {"en", "Event failed to start! Unable to obtain a valid position. Please try again."},
@@ -2683,41 +2688,41 @@ namespace Oxide.Plugins
                     {"en", "/{0} <tp> - start a manual event, and teleport to the position if TP argument is specified and you are an admin."},
                 }},
                 {szEventStarted, new Dictionary<string, string>() {
-                    {"en", "The event has started at <color=yellow>{0}</color>! The protective fire aura has been obliterated!</color>"},
+                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated!</color>"},
                 }},
                 {szEventOpened, new Dictionary<string, string>() {
-                    {"en", "An event has opened at <color=yellow>{0}</color>! Event will start in <color=yellow>{1}</color>. You are <color=orange>{2}m</color> away. Use <color=orange>/{3}</color> for help.</color>"},
+                    {"en", "An event has opened at <color=#FFFF00>{0}</color>! Event will start in <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away. Use <color=#FFA500>/{3}</color> for help.</color>"},
                 }},
                 {szEventBarrage, new Dictionary<string, string>() {
-                    {"en", "A barrage of <color=yellow>{0}</color> rockets can be heard at the location of the event!</color>"},
+                    {"en", "A barrage of <color=#FFFF00>{0}</color> rockets can be heard at the location of the event!</color>"},
                 }},
                 {szEventInfo, new Dictionary<string, string>() {
-                    {"en", "Event will start in <color=yellow>{0}</color> at <color=yellow>{1}</color>. You are <color=orange>{2}m</color> away.</color>"},
+                    {"en", "Event will start in <color=#FFFF00>{0}</color> at <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away.</color>"},
                 }},
                 {szEventStartedInfo, new Dictionary<string, string>() {
-                    {"en", "The event has already started at <color=yellow>{0}</color>! You are <color=orange>{1}m</color> away.</color>"},
+                    {"en", "The event has already started at <color=#FFFF00>{0}</color>! You are <color=#FFA500>{1}m</color> away.</color>"},
                 }},
                 {szEventNext, new Dictionary<string, string>() {
-                    {"en", "No events are open. Next event in <color=yellow>{0}</color></color>"},
+                    {"en", "No events are open. Next event in <color=#FFFF00>{0}</color></color>"},
                 }},
                 {szEventThief, new Dictionary<string, string>() {
-                    {"en", "The treasures at <color=yellow>{0}</color> have been stolen by <color=yellow>{1}</color>!</color>"},
+                    {"en", "The treasures at <color=#FFFF00>{0}</color> have been stolen by <color=#FFFF00>{1}</color>!</color>"},
                 }},
                 {szEventWins, new Dictionary<string, string>()
                 {
-                    {"en", "You have stolen <color=yellow>{0}</color> treasure chests! View the ladder using <color=orange>/{1} ladder</color> or <color=orange>/{1} lifetime</color></color>"},
+                    {"en", "You have stolen <color=#FFFF00>{0}</color> treasure chests! View the ladder using <color=#FFA500>/{1} ladder</color> or <color=#FFA500>/{1} lifetime</color></color>"},
                 }},
                 {szLadder, new Dictionary<string, string>()
                 {
-                    {"en", "<color=yellow>[ Top 10 Treasure Hunters (This Wipe) ]</color>:"},
+                    {"en", "<color=#FFFF00>[ Top 10 Treasure Hunters (This Wipe) ]</color>:"},
                 }},
                 {szLadderTotal, new Dictionary<string, string>()
                 {
-                    {"en", "<color=yellow>[ Top 10 Treasure Hunters (Lifetime) ]</color>:"},
+                    {"en", "<color=#FFFF00>[ Top 10 Treasure Hunters (Lifetime) ]</color>:"},
                 }},
                 {szLadderInsufficient, new Dictionary<string, string>()
                 {
-                    {"en", "<color=yellow>No players are on the ladder yet!</color>"},
+                    {"en", "<color=#FFFF00>No players are on the ladder yet!</color>"},
                 }},
                 {szEventAt, new Dictionary<string, string>() {
                     {"en", "Event at {0}"},
@@ -2729,7 +2734,7 @@ namespace Oxide.Plugins
                     {"en", "Not enough players online ({0} minimum)"},
                 }},
                 {szTreasureChest, new Dictionary<string, string>() {
-                    {"en", "Treasure Chest <color=orange>{0}m</color>"},
+                    {"en", "Treasure Chest <color=#FFA500>{0}m</color>"},
                 }},
                 {szInvalidConstant, new Dictionary<string, string>() {
                     {"en", "Invalid constant {0} - please notify the author!"},
@@ -2738,28 +2743,28 @@ namespace Oxide.Plugins
                     {"en", "Destroyed a left over treasure chest at {0}"},
                 }},
                 {szIndestructible, new Dictionary<string, string>() {
-                    {"en", "<color=red>Treasure chests are indestructible!</color>"},
+                    {"en", "<color=#FF0000>Treasure chests are indestructible!</color>"},
                 }},
                 {szFirstTimeUse, new Dictionary<string, string>() {
                     {"en", "Please view the config if you haven't already."},
                 }},
                 {szNewmanEnter, new Dictionary<string, string>() {
-                    {"en", "<color=red>To walk with clothes is to set one-self on fire. Tread lightly.</color>"},
+                    {"en", "<color=#FF0000>To walk with clothes is to set one-self on fire. Tread lightly.</color>"},
                 }},
                 {szNewmanTraitorBurn, new Dictionary<string, string>() {
-                    {"en", "<color=red>Tempted by the riches you have defiled these grounds. Vanish from these lands or PERISH!</color>"},
+                    {"en", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands or PERISH!</color>"},
                 }},
                 {szNewmanTraitor, new Dictionary<string, string>() {
-                    {"en", "<color=red>Tempted by the riches you have defiled these grounds. Vanish from these lands!</color>"},
+                    {"en", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands!</color>"},
                 }},
                 {szNewmanProtected, new Dictionary<string, string>() {
-                    {"en", "<color=red>This newman is temporarily protected on these grounds!</color>"},
+                    {"en", "<color=#FF0000>This newman is temporarily protected on these grounds!</color>"},
                 }},
                 {szNewmanProtect, new Dictionary<string, string>() {
-                    {"en", "<color=red>You are protected on these grounds. Do not defile them.</color>"},
+                    {"en", "<color=#FF0000>You are protected on these grounds. Do not defile them.</color>"},
                 }},
                 {szNewmanProtectFade, new Dictionary<string, string>() {
-                    {"en", "<color=red>Your protection has faded.</color>"},
+                    {"en", "<color=#FF0000>Your protection has faded.</color>"},
                 }},
                 {szLogStolen, new Dictionary<string, string>() {
                     {"en", "{0} ({1}) chests stolen {2}"},
@@ -2771,7 +2776,7 @@ namespace Oxide.Plugins
                     {"en", "Treasure Hunters have been logged to: {0}"},
                 }},
                 {szPrefix, new Dictionary<string, string>() {
-                    {"en", "<color=silver>[ <color=#406B35>Dangerous Treasures</color> ] "},
+                    {"en", "<color=#C0C0C0>[ <color=#406B35>Dangerous Treasures</color> ] "},
                 }},
                 {szTimeDay, new Dictionary<string, string>() {
                     {"en", "day"},
@@ -2802,7 +2807,7 @@ namespace Oxide.Plugins
                 }},
                 {szEventCountdown, new Dictionary<string, string>()
                 {
-                    {"en", "Event at <color=yellow>{0}</color> will start in <color=yellow>{1}</color>!</color>"},
+                    {"en", "Event at <color=#FFFF00>{0}</color> will start in <color=#FFFF00>{1}</color>!</color>"},
                 }},
                 {szInvalidEntry, new Dictionary<string, string>()
                 {
@@ -2826,15 +2831,15 @@ namespace Oxide.Plugins
                 }},
                 {szDestroyingTreasure, new Dictionary<string, string>()
                 {
-                    {"en", "The treasure at <color=yellow>{0}</color> will be destroyed by fire in <color=yellow>{1}</color> if not looted! Use <color=orange>/{2}</color> to find this chest.</color>"},
+                    {"en", "The treasure at <color=#FFFF00>{0}</color> will be destroyed by fire in <color=#FFFF00>{1}</color> if not looted! Use <color=#FFA500>/{2}</color> to find this chest.</color>"},
                 }},
                 {szEconomicsDeposit, new Dictionary<string, string>()
                 {
-                    {"en", "You have received <color=yellow>${0}</color> for stealing the treasure!"},
+                    {"en", "You have received <color=#FFFF00>${0}</color> for stealing the treasure!"},
                 }},
                 {szRewardPoints, new Dictionary<string, string>()
                 {
-                    {"en", "You have received <color=yellow>{0} RP</color> for stealing the treasure!"},
+                    {"en", "You have received <color=#FFFF00>{0} RP</color> for stealing the treasure!"},
                 }},
                 {"InvalidItem", new Dictionary<string, string>()
                 {
@@ -2858,7 +2863,13 @@ namespace Oxide.Plugins
                 }},
                 {"OnFirstPlayerEntered", new Dictionary<string, string>()
                 {
-                    {"en", "<color=yellow>{0}</color> is the first to enter the dangerous treasure event at <color=yellow>{1}</color>"},
+                    {"en", "<color=#FFFF00>{0}</color> is the first to enter the dangerous treasure event at <color=#FFFF00>{1}</color>"},
+                }},
+                {"OnChestOpened", new Dictionary<string, string>() {
+                    {"en", "<color=#FFFF00>{0}</color> is the first to see the treasures at <color=#FFFF00>{1}</color>!</color>"},
+                }},
+                {"OnChestDespawned", new Dictionary<string, string>() {
+                    {"en", "The treasures at <color=#FFFF00>{0}</color> have been lost forever! Better luck next time."},
                 }},
             };
         }
@@ -2892,7 +2903,9 @@ namespace Oxide.Plugins
             {
                 numRockets = Convert.ToInt32(GetConfig("Rocket Opener", "Rockets", 10));
                 useFireRockets = Convert.ToBoolean(GetConfig("Rocket Opener", "Use Fire Rockets", false));
-                rocketSpeed = Convert.ToSingle(GetConfig("Rocket Opener", "Speed", 25f).ToString());
+                rocketSpeed = Convert.ToSingle(GetConfig("Rocket Opener", "Speed", 5f).ToString());
+
+                if (rocketSpeed > 0.1f) rocketSpeed = 0.1f;
             }
 
             useFireballs = Convert.ToBoolean(GetConfig("Fireballs", "Enabled", true));
@@ -3018,7 +3031,9 @@ namespace Oxide.Plugins
             showStarted = Convert.ToBoolean(GetConfig("Event Messages", "Show Started Message", true));
             showPrefix = Convert.ToBoolean(GetConfig("Event Messages", "Show Prefix", true));
             showFirstEntered = Convert.ToBoolean(GetConfig("Event Messages", "Show First Player Entered", false));
-
+            showOpenedMsg = Convert.ToBoolean(GetConfig("Event Messages", "Show First Player Opened", false));
+            showDestructMsg = Convert.ToBoolean(GetConfig("Event Messages", "Show Despawn Message", false));
+            
             newmanMode = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Fire Aura", false));
             newmanProtect = Convert.ToBoolean(GetConfig("Newman Mode", "Protect Nakeds From Other Harm", false));
 
@@ -3272,7 +3287,31 @@ namespace Oxide.Plugins
             }
 
             if (!showPrefix && key.Length > 0 && key[0] == 'p')
-                message = "<color=silver>" + message;
+                message = "<color=#C0C0C0>" + message;
+
+            if (message.Contains("=blue"))
+                message = message.Replace("=blue", "=#0000FF");
+
+            if (message.Contains("=red"))
+                message = message.Replace("=red", "=#FF0000");
+
+            if (message.Contains("=yellow"))
+                message = message.Replace("=yellow", "=#FFFF00");
+
+            if (message.Contains("=lightblue"))
+                message = message.Replace("=lightblue", "=#ADD8E6");
+
+            if (message.Contains("=orange"))
+                message = message.Replace("=orange", "=#FFA500");
+
+            if (message.Contains("=silver"))
+                message = message.Replace("=silver", "=#C0C0C0");
+
+            if (message.Contains("=magenta"))
+                message = message.Replace("=magenta", "=#FF00FF");
+
+            if (message.Contains("=green"))
+                message = message.Replace("=green", "=#008000");
 
             int indices = message.Count(c => c == '{');
             return indices > 0 ? string.Format(message, args) : message;
@@ -3282,8 +3321,7 @@ namespace Oxide.Plugins
 
         static void SendDangerousMessage(BasePlayer player, Vector3 eventPos, string message)
         {
-            if (Interface.CallHook("OnDangerousMessage", player, eventPos, message) == null)
-                player.ChatMessage(message);
+            player.ChatMessage(message);
         }
         #endregion
     }
