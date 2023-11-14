@@ -16,7 +16,7 @@ using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.7")]
+    [Info("Dangerous Treasures", "nivex", "2.2.8")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -301,6 +301,7 @@ namespace Oxide.Plugins
 
                 Senses.Init(
                     owner: GetEntity(),
+                    brain: this,
                     memoryDuration: 5f,
                     range: 50f,
                     targetLostRange: 75f,
