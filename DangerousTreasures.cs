@@ -13,18 +13,14 @@ using System.Reflection;
 /* 
     TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
 
-    Fixed implementation `Require All Npcs Die Before Unlocking` @LucasMacD
-    Fixed protection fading on time @LucasMacD
-    Fixed events despawning on time @LucasMacD @FuelStream
-    Updated CanAcceptItem hook
-    Added automatic support for Marker Manager @N8CWG1990
-    Treasure loot may now be edited to specify amountMin @LucasMacD
-    Added check to automatic events to obey max events setting @Bumfuzzler
+    Fixed Unlooted Announcements
+    Fixed event started message
+    Added language message "pStartedNpcs" -> "The event has started at X! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable."
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.5")]
+    [Info("Dangerous Treasures", "nivex", "1.3.6")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -912,6 +908,17 @@ namespace Oxide.Plugins
                 if (destructTime > 0f && destruct == null)
                     destruct = ins.timer.Once(destructTime, () => Destruct());
 
+                if (showStarted)
+                    ins.PrintToChat(ins.msg(requireAllNpcsDie ? "pStartedNpcs" : szEventStarted, null, FormatGridReference(containerPos)));
+
+                started = true;
+
+                if (useUnclaimedAnnouncements)
+                {
+                    claimTime = Time.realtimeSinceStartup + destructTime;
+                    announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
+                }
+
                 if (requireAllNpcsDie)
                 {
                     foreach (var npc in npcs)
@@ -929,17 +936,6 @@ namespace Oxide.Plugins
 
                 if (container.HasFlag(BaseEntity.Flags.OnFire))
                     container.SetFlag(BaseEntity.Flags.OnFire, false);
-
-                if (showStarted)
-                    ins.PrintToChat(ins.msg(szEventStarted, null, FormatGridReference(containerPos)));
-
-                started = true;
-
-                if (useUnclaimedAnnouncements)
-                {
-                    claimTime = Time.realtimeSinceStartup + destructTime;
-                    announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
-                }
             }
 
             public void SetUnlockTime(float time)
@@ -3326,7 +3322,10 @@ namespace Oxide.Plugins
                 }},
                 {"CannotBeMounted", new Dictionary<string, string>() {
                     {"en", "You cannot loot the treasure while mounted!"},
-                }},                
+                }},
+                {"pStartedNpcs", new Dictionary<string, string>() {
+                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable.</color>"},
+                }},
             };
         }
 
