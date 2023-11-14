@@ -13,6 +13,10 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.0.6:
+    Revert collider changes
+    Added check in IsNpcStalled
+
     2.0.5:
     Possible fix for wipe detection
     Possible fix for OnPlayerDeath
@@ -55,7 +59,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.5")]
+    [Info("Dangerous Treasures", "nivex", "2.0.6")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -514,7 +518,7 @@ namespace Oxide.Plugins
 
             bool IsNpcStalled(NPCPlayerApex npc)
             {
-                if (npc.IsValid() && npc.lastDealtDamageTime <= 0)
+                if (npc.IsValid() && npc.IsAlive() && npc.lastDealtDamageTime <= 0)
                 {
                     return True;
                 }
@@ -634,11 +638,6 @@ namespace Oxide.Plugins
 
             public void Awaken()
             {
-                var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
-
-                collider.isTrigger = true;
-                collider.radius = Radius;
-
                 if (_config.Event.Spheres && _config.Event.SphereAmount > 0)
                 {
                     for (int i = 0; i < _config.Event.SphereAmount; i++)
@@ -702,6 +701,12 @@ namespace Oxide.Plugins
             void Awake()
             {
                 gameObject.layer = (int)Layer.Reserved1;
+                var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
+                collider.center = Vector3.zero;
+                collider.radius = eventRadius;
+                collider.isTrigger = true;
+                collider.enabled = true;
+                
                 container = GetComponent<StorageContainer>();
                 container.OwnerID = 0;
                 containerPos = container.transform.position;
