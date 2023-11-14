@@ -13,6 +13,12 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.0.2:
+    Fireballs no longer spawn on flying players
+    Added TreasureHunter message to lang api
+    Removed settings to adjust npc movement speed
+    Increased MarkerManager marker size
+
     2.0.1:
     Replaced messages which were not formatted properly with new ones
     This should also fix OnPlayerDeath.StackOverflowException @Covfefe
@@ -39,7 +45,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.1")]
+    [Info("Dangerous Treasures", "nivex", "2.0.2")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -329,6 +335,7 @@ namespace Oxide.Plugins
             List<ulong> newmans = new List<ulong>();
             List<ulong> traitors = new List<ulong>();
             List<uint> protects = new List<uint>();
+            List<ulong> players = new List<ulong>();
             List<TimedExplosive> missiles = new List<TimedExplosive>();
             List<int> times = new List<int>();
             List<SphereEntity> spheres = new List<SphereEntity>();
@@ -422,7 +429,7 @@ namespace Oxide.Plugins
                         }
                     }
 
-                    if (!useFireballs)
+                    if (!useFireballs || player.IsFlying)
                         return;
 
                     var stamp = Time.realtimeSinceStartup;
@@ -777,7 +784,7 @@ namespace Oxide.Plugins
 
                 var player = col.ToBaseEntity() as BasePlayer;
 
-                if (!player || player.IsNpc)
+                if (!player || player.IsNpc || players.Contains(player.userID))
                     return;
 
                 if (_config.EventMessages.FirstEntered && !firstEntered)
@@ -794,6 +801,8 @@ namespace Oxide.Plugins
 
                     tracker.Assign(this);
                 }
+
+                players.Add(player.userID);
             }
 
             void OnTriggerExit(Collider col)
@@ -1069,9 +1078,9 @@ namespace Oxide.Plugins
                         apex.SetFact(NPCPlayerApex.Facts.Speed, tooFar ? (byte)NPCPlayerApex.SpeedEnum.Run : (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
                     }
 
-                    apex.clothingMoveSpeedReduction = murd ? (tooFar ? -_config.NPC.MurdererSpeedSprinting : -_config.NPC.MurdererSpeedWalking) : (tooFar ? -_config.NPC.ScientistSpeedSprinting : -_config.NPC.ScientistSpeedWalking);
+                    //apex.clothingMoveSpeedReduction = murd ? (tooFar ? -_config.NPC.MurdererSpeedSprinting : -_config.NPC.MurdererSpeedWalking) : (tooFar ? -_config.NPC.ScientistSpeedSprinting : -_config.NPC.ScientistSpeedWalking);
                 }
-                else apex.clothingMoveSpeedReduction = 0f;
+                //else apex.clothingMoveSpeedReduction = 0f;
 
                 Invoke(new Action(() => UpdateDestination(apex, pos, murd)), 2f);
             }
@@ -1105,7 +1114,7 @@ namespace Oxide.Plugins
 
                 if (ins.MarkerManager != null)
                 {
-                    Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.1f, _config.Event.MarkerName, "FF0000", "00FFFFFF");
+                    Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.25f, _config.Event.MarkerName, "FF0000", "00FFFFFF");
                     markerCreated = true;
                     return;
                 }
@@ -3155,7 +3164,7 @@ namespace Oxide.Plugins
                     string name = covalence.Players.FindPlayerById(kvp.Key)?.Name ?? kvp.Key;
                     string value = kvp.Value.ToString("N0");
 
-                    Message(player, string.Format("<color=#ADD8E6>{0}</color>. <color=#C0C0C0>{1}</color> (<color=#FFFF00>{2}</color>)", ++rank, name, value));
+                    Message(player, msg("TreasureHunter", player.UserIDString, ++rank, name, value));
 
                     if (rank >= 10)
                         break;
@@ -3541,6 +3550,9 @@ namespace Oxide.Plugins
                 }},
                 {"CannotTeleport", new Dictionary<string, string>() {
                     {"en", "You are not allowed to teleport from this event."},
+                }},
+                {"TreasureHunter", new Dictionary<string, string>() {
+                    {"en", "<color=#ADD8E6>{0}</color>. <color=#C0C0C0>{1}</color> (<color=#FFFF00>{2}</color>)"},
                 }},
             };
         }
@@ -3937,17 +3949,17 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Health For Scientists (100 min, 5000 max)")]
             public float ScientistHealth { get; set; } = 150f;
 
-            [JsonProperty(PropertyName = "Murderer Sprinting Speed (0 min, 25 max)")]
+            /*[JsonProperty(PropertyName = "Murderer Sprinting Speed (0 min, 2.5 max)")]
             public float MurdererSpeedSprinting { get; set; } = 2.5f;
 
-            [JsonProperty(PropertyName = "Murderer Walking Speed (0 min, 25 max)")]
+            [JsonProperty(PropertyName = "Murderer Walking Speed (0 min, 2.5 max)")]
             public float MurdererSpeedWalking { get; set; } = 1.5f;
 
-            [JsonProperty(PropertyName = "Scientist Sprinting Speed (0 min, 25 max)")]
+            [JsonProperty(PropertyName = "Scientist Sprinting Speed (0 min, 2.5 max)")]
             public float ScientistSpeedSprinting { get; set; } = 1.0f;
 
-            [JsonProperty(PropertyName = "Scientist Walking Speed (0 min, 25 max)")]
-            public float ScientistSpeedWalking { get; set; } = 0.0f;
+            [JsonProperty(PropertyName = "Scientist Walking Speed (0 min, 2.5 max)")]
+            public float ScientistSpeedWalking { get; set; } = 0.0f;*/
 
             [JsonProperty(PropertyName = "Murderer Items", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> MurdererItems { get; set; } = new List<string> { "metal.facemask", "metal.plate.torso", "pants", "tactical.gloves", "boots.frog", "tshirt", "machete" };
@@ -4276,10 +4288,12 @@ namespace Oxide.Plugins
             if (_config.NPC.ScientistHealth > 5000) _config.NPC.ScientistHealth = 5000f;
             if (_config.NPC.MurdererHealth < 100) _config.NPC.MurdererHealth = 100f;
             if (_config.NPC.MurdererHealth > 5000) _config.NPC.MurdererHealth = 5000f;
-            if (_config.NPC.MurdererSpeedSprinting > 25) _config.NPC.MurdererSpeedSprinting = 25f;
+            /*if (_config.NPC.MurdererSpeedSprinting > 2.5f) _config.NPC.MurdererSpeedSprinting = 2.5f;
+            if (_config.NPC.MurdererSpeedWalking > 2.5) _config.NPC.MurdererSpeedWalking = 2.5f;
             if (_config.NPC.MurdererSpeedWalking < 0) _config.NPC.MurdererSpeedWalking = 0f;
-            if (_config.NPC.ScientistSpeedSprinting > 25) _config.NPC.ScientistSpeedSprinting = 25f;
+            if (_config.NPC.ScientistSpeedSprinting > 2.5f) _config.NPC.ScientistSpeedSprinting = 2.5f;
             if (_config.NPC.ScientistSpeedWalking < 0) _config.NPC.ScientistSpeedWalking = 0f;
+            if (_config.NPC.ScientistSpeedWalking > 2.5) _config.NPC.ScientistSpeedWalking = 2.5f;*/
 
             SaveConfig();
         }
