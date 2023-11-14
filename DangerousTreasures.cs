@@ -12,6 +12,9 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.0.9:
+    Fix for Unlock.ArgumentNullException
+
     2.0.8:
     Potential fix for StackoverflowException
 
@@ -64,7 +67,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.8")]
+    [Info("Dangerous Treasures", "nivex", "2.0.9")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -1414,7 +1417,7 @@ namespace Oxide.Plugins
 
                         if (npc.IsAlive())
                         {
-                            ins.timer.Once(1f, () => Unlock());
+                            Invoke(Unlock, 1f);
                             return;
                         }
                     }
