@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.4")]
+    [Info("Dangerous Treasures", "nivex", "1.2.5")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -1401,6 +1401,16 @@ namespace Oxide.Plugins
         {
             var colliders = Pool.GetList<Collider>();
             Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Collide);
+
+            foreach (var collider in colliders.ToList())
+            {
+                var apex = collider.GetComponentInParent<NPCPlayerApex>();
+
+                if (apex != null)
+                {
+                    colliders.Remove(collider);
+                }
+            }
 
             bool blocked = colliders.Count > 0;
 
