@@ -12,6 +12,10 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.1.1:
+    Added compatibility with NPCKits plugin
+    Loot items will no longer spawn when configured amount is 0
+
     2.1.0:
     Fix for Unlock.NullReferenceException
     Fix for grid location
@@ -71,7 +75,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.1.0")]
+    [Info("Dangerous Treasures", "nivex", "2.1.1")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -745,7 +749,13 @@ namespace Oxide.Plugins
                         continue;
                     }
 
-                    int amount = Math.Max(Convert.ToInt32(lootItem.amount), 1);
+                    int amount = Convert.ToInt32(lootItem.amount);
+
+                    if (amount <= 0)
+                    {
+                        continue;
+                    }
+
                     int amountMin = Convert.ToInt32(lootItem.amountMin);
 
                     if (amountMin > 0 && amountMin < amount)
@@ -969,7 +979,7 @@ namespace Oxide.Plugins
                 apex.displayName = _config.NPC.RandomNames.Count > 0 ? _config.NPC.RandomNames.GetRandom() : Facepunch.RandomUsernames.All.GetRandom();
                 if (!murd) apex.GetComponent<Scientist>().LootPanelName = apex.displayName;
 
-                Invoke(() => EquipNpc(apex, murd), 0.1f);
+                Invoke(() => EquipNpc(apex, murd), 1f);
 
                 apex.Invoke(() =>
                 {
@@ -1791,6 +1801,11 @@ namespace Oxide.Plugins
         object CanBradleyApcTarget(BradleyAPC apc, BaseEntity entity)
         {
             return TreasureChest.HasNPC(entity.GetComponent<NPCPlayerApex>()) ? (object)False : null;
+        }
+
+        private object OnNpcKits(ulong targetId)
+        {
+            return TreasureChest.HasNPC(targetId) ? (object)True : null;
         }
 
         object CanBeTargeted(BaseEntity npc, MonoBehaviour behaviour)
