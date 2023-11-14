@@ -16,7 +16,7 @@ using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.1")]
+    [Info("Dangerous Treasures", "nivex", "2.3.2")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -1396,6 +1396,11 @@ namespace Oxide.Plugins
                     if (skin != 0 && item.GetHeldEntity())
                     {
                         item.GetHeldEntity().skinID = skin;
+                    }
+
+                    if (!string.IsNullOrEmpty(lootItem.name))
+                    {
+                        item.name = lootItem.name;
                     }
 
                     item.MarkDirty();
@@ -5547,7 +5552,8 @@ namespace Oxide.Plugins
 
         public class LootItem
         {
-            public string shortname { get; set; }
+            public string shortname { get; set; } = "";
+            public string name { get; set; } = "";
             public int amount { get; set; }
             public ulong skin { get; set; }
             public int amountMin { get; set; }
