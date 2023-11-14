@@ -15,7 +15,7 @@ using Facepunch;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.1")]
+    [Info("Dangerous Treasures", "nivex", "2.2.2")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -50,9 +50,9 @@ namespace Oxide.Plugins
         private StoredData storedData = new StoredData();
         private Vector3 sd_customPos;
         private Timer eventTimer;
-        private const int obstructionLayer = Layers.Mask.Player_Server | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter;
+        private const int obstructionLayer = Layers.Mask.Player_Server | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter | Layers.Mask.Water;
         private const int heightLayer = Layers.Mask.Terrain | Layers.Mask.World | Layers.Mask.Default | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter;
-        private List<int> BlockedLayers = new List<int> { Layers.Mask.Water, Layers.Mask.Construction, Layers.Mask.Trigger, Layers.Mask.Prevent_Building, Layers.Mask.Deployed, Layers.Mask.Tree, Layers.Mask.Clutter };
+        private List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
         private Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
         private Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();  // positions of monuments on the server
 
@@ -2535,16 +2535,11 @@ namespace Oxide.Plugins
 
         public bool IsLayerBlocked(Vector3 position, float radius, int mask)
         {
-            var colliders = new List<Collider>();
-            Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
-
+            var colliders = Pool.GetList<Collider>();
+            Vis.Colliders(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
             colliders.RemoveAll(collider => (collider.ToBaseEntity()?.IsNpc ?? false) || !(collider.ToBaseEntity()?.OwnerID.IsSteamId() ?? true));
-
             bool blocked = colliders.Count > 0;
-
-            colliders.Clear();
-            colliders = null;
-
+            Pool.FreeList(ref colliders);
             return blocked;
         }
 
