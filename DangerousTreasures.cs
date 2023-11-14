@@ -15,22 +15,15 @@ using System.Globalization;
 
 //https://umod.org/community/dangerous-treasures/36922-adding-daily-limit-for-dtd-events?page=1#post-2
 /*
-Fix for Rust update
-Fixed map marker colors
-Fixed height check for spawn locations
-Fixed npcs spawning in world geometry?
-Fixed npcs targetting animals
-Improved safezone check up to 200 meters away
-Added grid for better random location of spawns
-Added probability setting to loot configuration
-Added `Stagger Spawns Every X Seconds` (10 seconds)
-Npcs that are submerged will now be killed by the server automatically
-Improved all NPC AI by making it identical to the AI used in the Raidable Bases plugin
+BLACKLISTED SETTINGS HAVE BEEN RESET
+Blacklist will now include all monuments on your map by default
+Added more checks to prevent npcs in rocks
+Fixed damage to npcs
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.2.3")]
+    [Info("Dangerous Treasures", "nivex", "2.2.4")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -1138,7 +1131,6 @@ namespace Oxide.Plugins
 
                 npcSpawnedAmount = npcs.Count;
                 npcsSpawned = npcSpawnedAmount > 0;
-                Interface.Oxide.LogInfo("{0} {1} {2}", npcsSpawned, npcSpawnedAmount, requireAllNpcsDie);
             }
 
             private NavMeshHit _navHit;
@@ -1198,11 +1190,11 @@ namespace Oxide.Plugins
                 return flag;
             }
 
-            private bool IsInside(Vector3 point) => Physics.Raycast(point, Vector3.up, out _hit, 50f, Layers.Solid, QueryTriggerInteraction.Ignore) && IsRock(_hit.collider.name) && _hit.collider.bounds.Contains(point);
+            private bool IsInside(Vector3 point) => Physics.Raycast(point, Vector3.up, out _hit, 50f, Layers.Solid, QueryTriggerInteraction.Ignore) && IsRock(_hit.collider.gameObject.name);
 
             private bool IsRock(string name) => _prefabs.Exists(value => name.Contains(value, CompareOptions.OrdinalIgnoreCase));
 
-            private List<string> _prefabs = new List<string> { "rock_", "formation_", "cliff" };
+            private List<string> _prefabs = new List<string> { "rock", "formation", "junk", "cliff", "invisible" };
 
             BaseEntity InstantiateEntity(Vector3 position, bool isScarecrow)
             {
@@ -1947,6 +1939,7 @@ namespace Oxide.Plugins
             allowedMonuments.Clear();
 
             string name = null;
+            int BlacklistedMonumentsCount = _config.NPC.BlacklistedMonuments.Count;
             foreach (var monument in UnityEngine.Object.FindObjectsOfType<MonumentInfo>())
             {
                 name = monument.displayPhrase.english;
@@ -1955,6 +1948,11 @@ namespace Oxide.Plugins
                 else if (monuments.ContainsKey(name)) name += ":" + RandomString(5, 5);
                 float radius = GetMonumentFloat(name);
                 monuments[name] = new MonInfo() { Position = monument.transform.position, Radius = radius };
+                                
+                if (!_config.NPC.BlacklistedMonuments.ContainsKey(monument.displayPhrase.english.Trim()))
+                {
+                    _config.NPC.BlacklistedMonuments.Add(monument.displayPhrase.english.Trim(), false);
+                }
             }
 
             if (monuments.Count > 0) allowedMonuments = monuments.ToDictionary(k => k.Key, k => k.Value);
@@ -1968,16 +1966,24 @@ namespace Oxide.Plugins
                 "Train Tunnel"
             };
 
+            int BlacklistCount = _config.Monuments.Blacklist.Count;
+
             foreach (var mon in allowedMonuments.ToList())
             {
                 name = mon.Key.Contains(":") ? mon.Key.Substring(0, mon.Key.LastIndexOf(":")) : mon.Key.TrimEnd();
 
-                if (name.Contains("Oil Rig") || _config.Monuments.Blacklist.Any(str => name.ToLower().Trim() == str.ToLower().Trim()))
+                string value = name.Trim();
+
+                if (!_config.Monuments.Blacklist.ContainsKey(value))
+                {
+                    _config.Monuments.Blacklist.Add(value, false);
+                }
+                else if (_config.Monuments.Blacklist[value])
                 {
                     allowedMonuments.Remove(mon.Key);
                 }
 
-                if (!_config.Monuments.Underground && underground.Exists(value => name.Contains(value, CompareOptions.OrdinalIgnoreCase)))
+                if (!_config.Monuments.Underground && underground.Exists(x => x.Contains(value, CompareOptions.OrdinalIgnoreCase)))
                 {
                     allowedMonuments.Remove(name);
                 }
@@ -1987,6 +1993,22 @@ namespace Oxide.Plugins
             Subscribe(nameof(Unload));
             RemoveAllTemporaryMarkers();
 
+            if (_config.Monuments.Blacklist.Count != BlacklistCount || _config.NPC.BlacklistedMonuments.Count != BlacklistedMonumentsCount)
+            {
+                var blacklist = _config.Monuments.Blacklist.ToList();
+
+                blacklist.Sort((x, y) => x.Key.CompareTo(y.Key));
+
+                _config.Monuments.Blacklist = blacklist.ToDictionary(x => x.Key, x => x.Value);
+
+                var npcblacklist = _config.NPC.BlacklistedMonuments.ToList();
+
+                npcblacklist.Sort((x, y) => x.Key.CompareTo(y.Key));
+
+                _config.NPC.BlacklistedMonuments = npcblacklist.ToDictionary(x => x.Key, x => x.Value);
+
+                SaveConfig();
+            }
             if (_config.Skins.RandomWorkshopSkins || _config.Treasure.RandomWorkshopSkins) SetWorkshopIDs(); // webrequest.Enqueue("http://s3.amazonaws.com/s3.playrust.com/icons/inventory/rust/schema.json", null, GetWorkshopIDs, this, Core.Libraries.RequestMethod.GET);
         }
 
@@ -2451,17 +2473,17 @@ namespace Oxide.Plugins
             {
                 return null;
             }
-
-            if (hitInfo.Initiator.IsNpc || hitInfo.Initiator is AutoTurret)
+            
+            if (entity is NPCPlayer)
             {
                 var npc = entity as NPCPlayer;
 
-                if (npc.IsValid() && TreasureChest.HasNPC(npc.userID))
+                if (TreasureChest.HasNPC(npc.userID))
                 {
                     return true;
                 }
             }
-
+            
             var attacker = hitInfo.Initiator as BasePlayer;
 
             if (_config.TruePVE.ServerWidePVP && attacker.IsValid() && entity is BasePlayer && treasureChests.Count > 0) // 1.2.9 & 1.3.3 & 1.6.4
@@ -2658,11 +2680,7 @@ namespace Oxide.Plugins
                     Subscribe(nameof(OnPlayerDeath));
                 }
 
-                if (_config.TruePVE.AllowPVPAtEvents || _config.TruePVE.ServerWidePVP)
-                {
-                    Subscribe(nameof(CanEntityTakeDamage));
-                }
-
+                Subscribe(nameof(CanEntityTakeDamage));
                 Subscribe(nameof(OnNpcTarget));
                 Subscribe(nameof(OnNpcResume));
                 Subscribe(nameof(OnNpcDestinationSet));
@@ -3272,30 +3290,26 @@ namespace Oxide.Plugins
             if (Map)
                 AddMapMarker(position, uid);
 
-            string monumentName = null;
+            bool canSpawnNpcs = true;
 
             foreach (var x in monuments)
             {
-                if (Vector3.Distance(x.Value.Position, position) <= 75f)
+                if (Vector3.Distance(x.Value.Position, position) <= x.Value.Radius)
                 {
-                    monumentName = x.Key;
+                    foreach (var value in _config.NPC.BlacklistedMonuments)
+                    {
+                        if (!value.Value && x.Key.Trim() == value.Key.Trim())
+                        {
+                            canSpawnNpcs = false;
+                            break;
+                        }
+                    }
                     break;
                 }
             }
 
-            if (!AiManager.nav_disable) chest.Invoke(chest.SpawnNpcs, 1f);
+            if (!AiManager.nav_disable && canSpawnNpcs) chest.Invoke(chest.SpawnNpcs, 1f);
             chest.Invoke(() => chest.SetUnlockTime(unlockTime), 2f);
-
-            if (!string.IsNullOrEmpty(monumentName))
-            {
-                foreach (var value in _config.NPC.BlacklistedMonuments)
-                {
-                    if (monumentName.ToLower().Trim() == value.ToLower().Trim())
-                    {
-                        return chest;
-                    }
-                }
-            }
 
             return chest;
         }
@@ -4692,8 +4706,20 @@ namespace Oxide.Plugins
 
         public class MonumentSettings
         {
-            [JsonProperty(PropertyName = "Blacklisted", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Blacklist { get; set; } = new List<string> { "Bandit Camp", "Outpost", "Junkyard" };
+            [JsonProperty(PropertyName = "Blacklisted Monuments", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public Dictionary<string, bool> Blacklist { get; set; } = new Dictionary<string, bool>
+            {
+                ["Bandit Camp"] = true,
+                ["Barn"] = true,
+                ["Fishing Village"] = true,
+                ["Junkyard"] = true,
+                ["Large Barn"] = true,
+                ["Large Fishing Village"] = true,
+                ["Outpost"] = true,
+                ["Ranch"] = true,
+                ["Train Tunnel"] = true,
+                ["Underwater Lab"] = true,
+            };
 
             [JsonProperty(PropertyName = "Auto Spawn At Monuments Only")]
             public bool Only { get; set; } = false;
@@ -4837,8 +4863,20 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Scientist Kits", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> ScientistKits { get; set; } = new List<string> { "scientist_kit_1", "scientist_kit_2" };
 
-            [JsonProperty(PropertyName = "Blacklisted", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> BlacklistedMonuments { get; set; } = new List<string> { "Bandit Camp", "Outpost", "Junkyard" };
+            [JsonProperty(PropertyName = "Blacklisted Monuments", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public Dictionary<string, bool> BlacklistedMonuments { get; set; } = new Dictionary<string, bool>
+            {
+                ["Bandit Camp"] = true,
+                ["Barn"] = true,
+                ["Fishing Village"] = true,
+                ["Junkyard"] = true,
+                ["Large Barn"] = true,
+                ["Large Fishing Village"] = true,
+                ["Outpost"] = true,
+                ["Ranch"] = true,
+                ["Train Tunnel"] = true,
+                ["Underwater Lab"] = true,
+            };
 
             [JsonProperty(PropertyName = "Random Names", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> RandomNames { get; set; } = new List<string>();
