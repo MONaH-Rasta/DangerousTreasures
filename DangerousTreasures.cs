@@ -12,15 +12,14 @@ using System.Reflection;
 
 /* 
     TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
+    TODO: Item rarity
 
-    Fix for started spam
-    Fix for announcement after looted
-    Fix for item amount being set to 1
+    Fix for Npcs > Despawn Inventory On Death > true @Toliman
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.7")]
+    [Info("Dangerous Treasures", "nivex", "1.3.8")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -147,7 +146,7 @@ namespace Oxide.Plugins
 
                     var list = new List<BasePlayer>();
                     var entities = Pool.GetList<BaseEntity>();
-                    Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerMask, QueryTriggerInteraction.Collide);
+                    Vis.Entities<BaseEntity>(launchPos, eventRadius + missileDetectionDistance, entities, playerMask, QueryTriggerInteraction.Ignore);
 
                     foreach (var entity in entities)
                     {
@@ -1368,25 +1367,25 @@ namespace Oxide.Plugins
                 {
                     if (npc.userID == corpse.playerSteamID)
                     {
+                        if (spawnsDespawnInventory)
+                        {
+                            NextTick(() =>
+                            {
+                                if (corpse != null && !corpse.IsDestroyed && corpse.containers != null)
+                                {
+                                    for (int i = 0; i < corpse.containers.Count(); i++)
+                                    {
+                                        corpse.containers[i].Clear();
+                                    }
+                                }
+                            });
+                        }
+
                         corpse._playerName = npc.displayName;
                         chest = x;
                         break;
                     }
                 }
-            }
-
-            if (spawnsDespawnInventory)
-            {
-                NextTick(() =>
-                {
-                    if (corpse != null && !corpse.IsDestroyed && corpse.containers != null)
-                    {
-                        for (int i = 0; i < corpse.containers.Count(); i++)
-                        {
-                            corpse.containers[i].Clear();
-                        }
-                    }
-                });
             }
 
             if (chest == null)
@@ -1845,7 +1844,7 @@ namespace Oxide.Plugins
         public bool IsLayerBlocked(Vector3 position, float radius, int mask)
         {
             var colliders = Pool.GetList<Collider>();
-            Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Collide);
+            Vis.Colliders<Collider>(position, radius, colliders, mask, QueryTriggerInteraction.Ignore);
 
             colliders.RemoveAll(collider => collider.GetComponentInParent<NPCPlayerApex>() != null || (!collider.GetComponentInParent<BaseEntity>()?.OwnerID.IsSteamId() ?? true));
 
