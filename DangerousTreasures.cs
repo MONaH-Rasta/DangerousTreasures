@@ -13,7 +13,9 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
-    ***Removed all raidable bases functionality. Use Raidable Bases plugin, and enable Expansion Mode in that config.***
+    2.0.1:
+    Replaced messages which were not formatted properly with new ones
+    This should also fix OnPlayerDeath.StackOverflowException @Covfefe
     
     2.0.0:
     Please save/delete your config file! Config was rewritten
@@ -37,7 +39,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.0")]
+    [Info("Dangerous Treasures", "nivex", "2.0.1")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -138,7 +140,6 @@ namespace Oxide.Plugins
         List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
         List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
         Dictionary<Vector3, float> managedZones = new Dictionary<Vector3, float>();
-        static List<TreasureItem> chestLoot { get; set; } = new List<TreasureItem>();
         static Dictionary<uint, MapInfo> mapMarkers = new Dictionary<uint, MapInfo>();
         static Dictionary<uint, string> lustyMarkers = new Dictionary<uint, string>();
         Dictionary<string, List<ulong>> skinsCache = new Dictionary<string, List<ulong>>();
@@ -335,7 +336,7 @@ namespace Oxide.Plugins
             List<Vector3> firePositions = new List<Vector3>();
             Timer destruct, unlock, countdown, announcement;
             public List<NPCPlayerApex> npcs = new List<NPCPlayerApex>();
-            MapMarkerExplosion mapMarker;
+            MapMarkerExplosion explosionMarker;
             MapMarkerGenericRadius genericMarker;
             VendingMachineMapMarker vendingMarker;
             int npcSpawnedAmount;
@@ -517,7 +518,7 @@ namespace Oxide.Plugins
             {
                 get
                 {
-                    return mapMarker != null || vendingMarker != null;
+                    return explosionMarker != null || vendingMarker != null;
                 }
             }
 
@@ -797,9 +798,6 @@ namespace Oxide.Plugins
 
             void OnTriggerExit(Collider col)
             {
-                if (!_config.NewmanMode.Harm)
-                    return;
-
                 var player = col.ToBaseEntity() as BasePlayer;
 
                 if (!player)
@@ -815,6 +813,9 @@ namespace Oxide.Plugins
 
                     apex.Destination = containerPos;
                 }
+
+                if (!_config.NewmanMode.Harm)
+                    return;
 
                 if (protects.Contains(player.net.ID))
                 {
@@ -976,25 +977,11 @@ namespace Oxide.Plugins
 
             void SetupNpcKits()
             {
-                npcKits = new Dictionary<string, List<string>>();
-                npcKits.Add("murderer", new List<string>());
-                npcKits.Add("scientist", new List<string>());
-
-                foreach (var kit in _config.NPC.MurdererKits)
+                npcKits = new Dictionary<string, List<string>>
                 {
-                    if (!npcKits["murderer"].Contains(kit) && IsKit(kit))
-                    {
-                        npcKits["murderer"].Add(kit);
-                    }
-                }
-
-                foreach (var kit in _config.NPC.ScientistKits)
-                {
-                    if (!npcKits["scientist"].Contains(kit) && IsKit(kit))
-                    {
-                        npcKits["scientist"].Add(kit);
-                    }
-                }
+                    { "murderer", _config.NPC.MurdererKits.Where(kit => IsKit(kit)).ToList() },
+                    { "scientist", _config.NPC.ScientistKits.Where(kit => IsKit(kit)).ToList() }
+                };
             }
 
             bool IsKit(string kit)
@@ -1096,6 +1083,11 @@ namespace Oxide.Plugins
                     CancelInvoke(UpdateMarker);
                 }
 
+                if (explosionMarker != null && !explosionMarker.IsDestroyed)
+                {
+                    explosionMarker.SendNetworkUpdate();
+                }
+
                 if (genericMarker != null && !genericMarker.IsDestroyed)
                 {
                     genericMarker.SendUpdate();
@@ -1131,12 +1123,12 @@ namespace Oxide.Plugins
                 //explosionmarker cargomarker ch47marker cratemarker
                 if (_config.Event.MarkerExplosion)
                 {
-                    mapMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/explosionmarker.prefab", containerPos, Quaternion.identity, true) as MapMarkerExplosion;
+                    explosionMarker = GameManager.server.CreateEntity("assets/prefabs/tools/map/explosionmarker.prefab", containerPos, Quaternion.identity, true) as MapMarkerExplosion;
 
-                    if (mapMarker != null)
+                    if (explosionMarker != null)
                     {
-                        mapMarker.Spawn();
-                        mapMarker.SendMessage("SetDuration", 60, SendMessageOptions.DontRequireReceiver);
+                        explosionMarker.Spawn();
+                        explosionMarker.SendMessage("SetDuration", 60, SendMessageOptions.DontRequireReceiver);
                     }
                 }
                 else if (_config.Event.MarkerVending)
@@ -1172,10 +1164,10 @@ namespace Oxide.Plugins
                 ins.RemoveLustyMarker(uid);
                 ins.RemoveMapMarker(uid);
 
-                if (mapMarker != null && !mapMarker.IsDestroyed)
+                if (explosionMarker != null && !explosionMarker.IsDestroyed)
                 {
-                    mapMarker.CancelInvoke(mapMarker.DelayedDestroy);
-                    mapMarker.Kill(BaseNetworkable.DestroyMode.None);
+                    explosionMarker.CancelInvoke(explosionMarker.DelayedDestroy);
+                    explosionMarker.Kill(BaseNetworkable.DestroyMode.None);
                 }
 
                 if (genericMarker != null && !genericMarker.IsDestroyed)
@@ -1281,7 +1273,7 @@ namespace Oxide.Plugins
                 {
                     ins.Puts(_("Invalid Constant", null, fireballPrefab));
                     useFireballs = false;
-                    CancelInvoke(new Action(SpawnFire));
+                    CancelInvoke(SpawnFire);
                     firePositions.Clear();
                     return;
                 }
@@ -1333,7 +1325,7 @@ namespace Oxide.Plugins
                 string eventPos = FormatGridReference(containerPos);
 
                 foreach (var target in BasePlayer.activePlayerList)
-                    Message(target, ins.msg("pDestroyingTreasure", target.UserIDString, eventPos, ins.FormatTime(time, target.UserIDString), _config.Settings.DistanceChatCommand));
+                    Message(target, ins.msg("DestroyingTreasure", target.UserIDString, eventPos, ins.FormatTime(time, target.UserIDString), _config.Settings.DistanceChatCommand));
             }
 
             public string GetUnlockTime(string userID = null)
@@ -1358,7 +1350,7 @@ namespace Oxide.Plugins
                         destruct = ins.timer.Once(_config.Event.DestructTime, () => Destruct());
 
                     if (_config.EventMessages.Started)
-                        ins.PrintToChat(ins.msg(_config.Unlock.RequireAllNpcsDie ? "pStartedNpcs" : "pStarted", null, FormatGridReference(containerPos)));
+                        ins.PrintToChat(ins.msg(_config.Unlock.RequireAllNpcsDie ? "StartedNpcs" : "Started", null, FormatGridReference(containerPos)));
 
                     if (_config.UnlootedAnnouncements.Enabled)
                     {
@@ -1427,7 +1419,7 @@ namespace Oxide.Plugins
                             string eventPos = FormatGridReference(containerPos);
 
                             foreach (var target in BasePlayer.activePlayerList)
-                                Message(target, ins.msg("pCountdown", target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
+                                Message(target, ins.msg("Countdown", target.UserIDString, eventPos, ins.FormatTime(countdownTime, target.UserIDString)));
 
                             times.Remove(countdownTime);
                         }
@@ -1710,7 +1702,6 @@ namespace Oxide.Plugins
                     RemoveMapMarker(entry.Key);
 
             BlockedLayers.Clear();
-            chestLoot?.Clear();
             eventTimer?.Destroy();
             indestructibleWarnings.Clear();
             skinsCache.Clear();
@@ -1791,8 +1782,6 @@ namespace Oxide.Plugins
                 }
             }
         }
-
-        //void OnEntityGroundMissing(BaseEntity entity)
 
         void OnEntitySpawned(BaseNetworkable entity)
         {
@@ -1955,10 +1944,10 @@ namespace Oxide.Plugins
                         }
 
                         var posStr = FormatGridReference(looter.transform.position);
-                        Puts(_("pThief", null, posStr, looter.displayName));
+                        Puts(_("Thief", null, posStr, looter.displayName));
 
                         foreach (var target in BasePlayer.activePlayerList)
-                            Message(target, msg("pThief", target.UserIDString, posStr, looter.displayName));
+                            Message(target, msg("Thief", target.UserIDString, posStr, looter.displayName));
 
                         looter.EndLooting();
 
@@ -2589,7 +2578,7 @@ namespace Oxide.Plugins
             container.SetFlag(BaseEntity.Flags.OnFire, true);
             if (!container.isSpawned) container.Spawn();
 
-            TreasureChest.SetLoot(container, chestLoot);
+            TreasureChest.SetLoot(container, ChestLoot);
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
             chest.Radius = _config.Event.Radius;
@@ -2614,7 +2603,7 @@ namespace Oxide.Plugins
             {
                 double distance = Math.Round(Vector3.Distance(target.transform.position, container.transform.position), 2);
                 string unlockStr = FormatTime(unlockTime, target.UserIDString);
-                string message = msg("pOpened", target.UserIDString, posStr, unlockStr, distance, _config.Settings.DistanceChatCommand);
+                string message = msg("Opened", target.UserIDString, posStr, unlockStr, distance, _config.Settings.DistanceChatCommand);
 
                 if (_config.EventMessages.Opened)
                 {
@@ -2627,7 +2616,7 @@ namespace Oxide.Plugins
                 }
 
                 if (useRockets && _config.EventMessages.Barrage)
-                    Message(target, msg("pBarrage", target.UserIDString, _config.Rocket.Amount));
+                    Message(target, msg("Barrage", target.UserIDString, _config.Rocket.Amount));
 
                 if (_config.Event.DrawTreasureIfNearby && _config.Event.AutoDrawDistance > 0f && distance <= _config.Event.AutoDrawDistance)
                     DrawText(target, container.transform.position, msg("Treasure Chest", target.UserIDString, distance));
@@ -3116,9 +3105,9 @@ namespace Oxide.Plugins
                             Message(player, msg("InvalidValue", player.UserIDString, args[3]));
                     }
 
-                    foreach (var loot in chestLoot)
+                    foreach (var loot in ChestLoot)
                     {
-                        if (loot.shortname.ToString() == shortname)
+                        if (loot.shortname == shortname)
                         {
                             loot.amount = amount;
                             loot.skin = skin;
@@ -3126,7 +3115,6 @@ namespace Oxide.Plugins
                         }
                     }
 
-                    _config.Treasure.Loot = chestLoot;
                     SaveConfig();
                     Message(player, msg("AddedItem", player.UserIDString, shortname, amount, skin));
                 }
@@ -3177,7 +3165,7 @@ namespace Oxide.Plugins
             }
 
             if (_config.RankedLadder.Enabled)
-                Message(player, msg("pWins", player.UserIDString, storedData.Players.ContainsKey(player.UserIDString) ? storedData.Players[player.UserIDString].StolenChestsSeed : 0, _config.Settings.DistanceChatCommand));
+                Message(player, msg("Wins", player.UserIDString, storedData.Players.ContainsKey(player.UserIDString) ? storedData.Players[player.UserIDString].StolenChestsSeed : 0, _config.Settings.DistanceChatCommand));
 
             if (args.Length >= 1 && player.IsAdmin)
             {
@@ -3229,7 +3217,7 @@ namespace Oxide.Plugins
                 if (time < 0)
                     time = 0;
 
-                Message(player, msg("pNext", player.UserIDString, FormatTime(time, player.UserIDString)));
+                Message(player, msg("Next", player.UserIDString, FormatTime(time, player.UserIDString)));
                 return;
             }
 
@@ -3238,7 +3226,7 @@ namespace Oxide.Plugins
                 double distance = Math.Round(Vector3.Distance(player.transform.position, chest.Value.containerPos), 2);
                 string posStr = FormatGridReference(chest.Value.containerPos);
 
-                Message(player, chest.Value.GetUnlockTime() != null ? msg("pInfo", player.UserIDString, chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, _config.Settings.DistanceChatCommand) : msg("pAlready", player.UserIDString, posStr, distance, _config.Settings.DistanceChatCommand));
+                Message(player, chest.Value.GetUnlockTime() != null ? msg("Info", player.UserIDString, chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, _config.Settings.DistanceChatCommand) : msg("Already", player.UserIDString, posStr, distance, _config.Settings.DistanceChatCommand));
                 if (_config.Settings.AllowDrawText) DrawText(player, chest.Value.containerPos, msg("Treasure Chest", player.UserIDString, distance));
             }
         }
@@ -3404,33 +3392,33 @@ namespace Oxide.Plugins
                 {"Help", new Dictionary<string, string>() {
                     {"en", "/{0} <tp> - start a manual event, and teleport to the position if TP argument is specified and you are an admin."},
                 }},
-                {"pStarted", new Dictionary<string, string>() {
-                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated!</color>"},
+                {"Started", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated!</color>"},
                 }},
-                {"pStartedNpcs", new Dictionary<string, string>() {
-                    {"en", "The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable.</color>"},
+                {"StartedNpcs", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>The event has started at <color=#FFFF00>{0}</color>! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable.</color>"},
                 }},
-                {"pOpened", new Dictionary<string, string>() {
-                    {"en", "An event has opened at <color=#FFFF00>{0}</color>! Event will start in <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away. Use <color=#FFA500>/{3}</color> for help.</color>"},
+                {"Opened", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>An event has opened at <color=#FFFF00>{0}</color>! Event will start in <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away. Use <color=#FFA500>/{3}</color> for help.</color>"},
                 }},
-                {"pBarrage", new Dictionary<string, string>() {
-                    {"en", "A barrage of <color=#FFFF00>{0}</color> rockets can be heard at the location of the event!</color>"},
+                {"Barrage", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>A barrage of <color=#FFFF00>{0}</color> rockets can be heard at the location of the event!</color>"},
                 }},
-                {"pInfo", new Dictionary<string, string>() {
-                    {"en", "Event will start in <color=#FFFF00>{0}</color> at <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away.</color>"},
+                {"Info", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>Event will start in <color=#FFFF00>{0}</color> at <color=#FFFF00>{1}</color>. You are <color=#FFA500>{2}m</color> away.</color>"},
                 }},
-                {"pAlready", new Dictionary<string, string>() {
-                    {"en", "The event has already started at <color=#FFFF00>{0}</color>! You are <color=#FFA500>{1}m</color> away.</color>"},
+                {"Already", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>The event has already started at <color=#FFFF00>{0}</color>! You are <color=#FFA500>{1}m</color> away.</color>"},
                 }},
-                {"pNext", new Dictionary<string, string>() {
-                    {"en", "No events are open. Next event in <color=#FFFF00>{0}</color></color>"},
+                {"Next", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>No events are open. Next event in <color=#FFFF00>{0}</color></color>"},
                 }},
-                {"pThief", new Dictionary<string, string>() {
-                    {"en", "The treasures at <color=#FFFF00>{0}</color> have been stolen by <color=#FFFF00>{1}</color>!</color>"},
+                {"Thief", new Dictionary<string, string>() {
+                    {"en", "<color=#C0C0C0>The treasures at <color=#FFFF00>{0}</color> have been stolen by <color=#FFFF00>{1}</color>!</color>"},
                 }},
-                {"pWins", new Dictionary<string, string>()
+                {"Wins", new Dictionary<string, string>()
                 {
-                    {"en", "You have stolen <color=#FFFF00>{0}</color> treasure chests! View the ladder using <color=#FFA500>/{1} ladder</color> or <color=#FFA500>/{1} lifetime</color></color>"},
+                    {"en", "<color=#C0C0C0>You have stolen <color=#FFFF00>{0}</color> treasure chests! View the ladder using <color=#FFA500>/{1} ladder</color> or <color=#FFA500>/{1} lifetime</color></color>"},
                 }},
                 {"Ladder", new Dictionary<string, string>()
                 {
@@ -3495,20 +3483,20 @@ namespace Oxide.Plugins
                 {"Log Saved", new Dictionary<string, string>() {
                     {"en", "Treasure Hunters have been logged to: {0}"},
                 }},
-                {"Prefix", new Dictionary<string, string>() {
-                    {"en", "<color=#C0C0C0>[ <color=#406B35>Dangerous Treasures</color> ] "},
+                {"MessagePrefix", new Dictionary<string, string>() {
+                    {"en", "[ <color=#406B35>Dangerous Treasures</color> ] "},
                 }},
-                {"pCountdown", new Dictionary<string, string>()
+                {"Countdown", new Dictionary<string, string>()
                 {
-                    {"en", "Event at <color=#FFFF00>{0}</color> will start in <color=#FFFF00>{1}</color>!</color>"},
+                    {"en", "<color=#C0C0C0>Event at <color=#FFFF00>{0}</color> will start in <color=#FFFF00>{1}</color>!</color>"},
                 }},
                 {"RestartDetected", new Dictionary<string, string>()
                 {
                     {"en", "Restart detected. Next event in {0} minutes."},
                 }},
-                {"pDestroyingTreasure", new Dictionary<string, string>()
+                {"DestroyingTreasure", new Dictionary<string, string>()
                 {
-                    {"en", "The treasure at <color=#FFFF00>{0}</color> will be destroyed by fire in <color=#FFFF00>{1}</color> if not looted! Use <color=#FFA500>/{2}</color> to find this chest.</color>"},
+                    {"en", "<color=#C0C0C0>The treasure at <color=#FFFF00>{0}</color> will be destroyed by fire in <color=#FFFF00>{1}</color> if not looted! Use <color=#FFA500>/{2}</color> to find this chest.</color>"},
                 }},
                 {"EconomicsDeposit", new Dictionary<string, string>()
                 {
@@ -3647,47 +3635,9 @@ namespace Oxide.Plugins
             return ins.RemoveFormatting(ins.msg(key, id, args));
         }
 
-        Dictionary<string, string> colors = new Dictionary<string, string>
-        {
-            ["<color=blue>"] = "<color=#0000FF>",
-            ["<color=red>"] = "<color=#FF0000>",
-            ["<color=yellow>"] = "<color=#FFFF00>",
-            ["<color=lightblue>"] = "<color=#ADD8E6>",
-            ["<color=orange>"] = "<color=#FFA500>",
-            ["<color=silver>"] = "<color=#C0C0C0>",
-            ["<color=magenta>"] = "<color=#FF00FF>",
-            ["<color=green>"] = "<color=#008000>",
-            ["<color=lime>"] = "<color=#00FF00>",
-        };
-
-        string GetPrefix()
-        {
-            return lang.GetMessage("Prefix", this, null);
-        }
-
-        StringBuilder _cachedStringBuilder = new StringBuilder();
         string msg(string key, string id = null, params object[] args)
         {
-            _cachedStringBuilder.Clear();
-
-            if (_config.EventMessages.Prefix && key.Length > 0 && key[0] == 'p')
-            {
-                _cachedStringBuilder.Append(GetPrefix());
-            }
-
-            if (!_config.EventMessages.Prefix && key.Length > 0 && key[0] == 'p')
-            {
-                _cachedStringBuilder.Append("<color=#C0C0C0>");
-            }
-
-            _cachedStringBuilder.Append(lang.GetMessage(key, this, id));
-
-            foreach (var entry in colors)
-            {
-                _cachedStringBuilder.Replace(entry.Key, entry.Value);
-            }
-
-            string message = _cachedStringBuilder.ToString();
+            string message = _config.EventMessages.Prefix ? lang.GetMessage("MessagePrefix", this, null) + lang.GetMessage(key, this, id) : lang.GetMessage(key, this, id);
 
             return message.Contains("{") ? string.Format(message, args) : message;
         }
@@ -4331,71 +4281,55 @@ namespace Oxide.Plugins
             if (_config.NPC.ScientistSpeedSprinting > 25) _config.NPC.ScientistSpeedSprinting = 25f;
             if (_config.NPC.ScientistSpeedWalking < 0) _config.NPC.ScientistSpeedWalking = 0f;
 
-            if (_config.Treasure.UseDOWL)
-            {
-                switch (DateTime.Now.DayOfWeek)
-                {
-                    case DayOfWeek.Monday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Monday);
-                            break;
-                        }
-                    case DayOfWeek.Tuesday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Tuesday);
-                            break;
-                        }
-                    case DayOfWeek.Wednesday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Wednesday);
-                            break;
-                        }
-                    case DayOfWeek.Thursday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Thursday);
-                            break;
-                        }
-                    case DayOfWeek.Friday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Friday);
-                            break;
-                        }
-                    case DayOfWeek.Saturday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Saturday);
-                            break;
-                        }
-                    case DayOfWeek.Sunday:
-                        {
-                            SetTreasure(_config.Treasure.DOWL_Sunday);
-                            break;
-                        }
-                }
-            }
-            else
-            {
-                foreach (var ti in _config.Treasure.Loot)
-                {
-                    if (ti.shortname == "survey.charge")
-                    {
-                        ti.shortname = "surveycharge";
-                    }
-                    else if (ti.shortname == "smg.thomspon")
-                    {
-                        ti.shortname = "smg.thompson";
-                    }
-                }
-
-                SetTreasure(_config.Treasure.Loot);
-            }
-
             SaveConfig();
         }
 
-        void SetTreasure(List<TreasureItem> treasures)
+        List<TreasureItem> ChestLoot
         {
-            chestLoot.Clear();
-            chestLoot.AddRange(treasures.ToList());
+            get
+            {
+                if (unloading || !init)
+                {
+                    return new List<TreasureItem>();
+                }
+
+                if (_config.Treasure.UseDOWL)
+                {
+                    switch (DateTime.Now.DayOfWeek)
+                    {
+                        case DayOfWeek.Monday:
+                            {
+                                return _config.Treasure.DOWL_Monday;
+                            }
+                        case DayOfWeek.Tuesday:
+                            {
+                                return _config.Treasure.DOWL_Tuesday;
+                            }
+                        case DayOfWeek.Wednesday:
+                            {
+                                return _config.Treasure.DOWL_Wednesday;
+                            }
+                        case DayOfWeek.Thursday:
+                            {
+                                return _config.Treasure.DOWL_Thursday;
+                            }
+                        case DayOfWeek.Friday:
+                            {
+                                return _config.Treasure.DOWL_Friday;
+                            }
+                        case DayOfWeek.Saturday:
+                            {
+                                return _config.Treasure.DOWL_Saturday;
+                            }
+                        case DayOfWeek.Sunday:
+                            {
+                                return _config.Treasure.DOWL_Sunday;
+                            }
+                    }
+                }
+
+                return _config.Treasure.Loot;
+            }
         }
 
         protected override void SaveConfig() => Config.WriteObject(_config);
