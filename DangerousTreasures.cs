@@ -16,7 +16,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.4")]
+    [Info("Dangerous Treasures", "nivex", "2.3.5")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -1646,7 +1646,7 @@ namespace Oxide.Plugins
 
             private bool IsAcceptableWaterDepth(Vector3 position)
             {
-                return WaterLevel.GetOverallWaterDepth(position, true, null, false) <= 0.75f;
+                return WaterLevel.GetOverallWaterDepth(position, true, true, null, false) <= 0.75f;
             }
 
             private bool TestInsideObject(Vector3 position)
@@ -3571,7 +3571,7 @@ namespace Oxide.Plugins
 
             foreach (var e in BaseNetworkable.serverEntities.OfType<BaseEntity>())
             {
-                if (!entities.Contains(e) && !e.IsKilled() && InRange2D(e.transform.position, position, config.Event.Radius))
+                if (!e.IsKilled() && !entities.Contains(e) && InRange2D(e.transform.position, position, config.Event.Radius))
                 {
                     if (e.IsNpc || e is LootContainer)
                     {
@@ -3582,8 +3582,9 @@ namespace Oxide.Plugins
 
             if (!config.Monuments.Underground)
             {
-                entities.RemoveAll(e => e.transform.position.y < position.y);
+                entities.RemoveAll(e => e.IsKilled() || e.transform.position.y < position.y);
             }
+            else entities.RemoveAll(e => e.IsKilled());
 
             if (entities.Count < 2)
             {
@@ -3595,12 +3596,14 @@ namespace Oxide.Plugins
             }
 
             var entity = entities.GetRandom();
+            
+            position = entity.transform.position;
 
             entity.Invoke(entity.SafelyKill, 0.1f);
 
             Pool.FreeList(ref entities);
 
-            return entity.transform.position;
+            return position;
         }
 
         void SetupPositions()
@@ -3668,6 +3671,7 @@ namespace Oxide.Plugins
             container.dropsLoot = false;
             container.SetFlag(BaseEntity.Flags.Locked, true);
             container.SetFlag(BaseEntity.Flags.OnFire, true);
+            container.enableSaving = false;
             container.Spawn();
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
@@ -3690,12 +3694,6 @@ namespace Oxide.Plugins
 
                 container.skinID = skin;
                 container.SendNetworkUpdate();
-            }
-
-            if (container.enableSaving)
-            {
-                container.enableSaving = false;
-                BaseEntity.saveList.Remove(container);
             }
 
             var uid = container.net.ID;
