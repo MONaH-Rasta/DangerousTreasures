@@ -12,6 +12,9 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.1.4:
+    Fix for Rust update
+
     2.1.3:
     Fix for OnNpcTarget
     Fix for OnEntityTakeDamage
@@ -86,7 +89,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.1.3")]
+    [Info("Dangerous Treasures", "nivex", "2.1.4")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -984,7 +987,7 @@ namespace Oxide.Plugins
                 apex.InitializeHealth(apex.startHealth, apex.startHealth);
                 apex.CommunicationRadius = 0;
                 apex.RadioEffect = new GameObjectRef();
-                apex.displayName = _config.NPC.RandomNames.Count > 0 ? _config.NPC.RandomNames.GetRandom() : Facepunch.RandomUsernames.All.GetRandom();
+                apex.displayName = _config.NPC.RandomNames.Count > 0 ? _config.NPC.RandomNames.GetRandom() : Facepunch.RandomUsernames.Get(apex.userID);
                 if (!murd) apex.GetComponent<Scientist>().LootPanelName = apex.displayName;
 
                 Invoke(() => EquipNpc(apex, murd), 1f);
@@ -2259,7 +2262,7 @@ namespace Oxide.Plugins
             {
                 foreach (var def in ItemManager.GetItemDefinitions())
                 {
-                    var skins = Rust.Workshop.Approved.All.Where(skin => !string.IsNullOrEmpty(skin.Skinnable.ItemName) && skin.Skinnable.ItemName == def.shortname).Select(skin => System.Convert.ToUInt64(skin.WorkshopdId)).ToList();
+                    var skins = Rust.Workshop.Approved.All.Values.Where(skin => !string.IsNullOrEmpty(skin.Skinnable.ItemName) && skin.Skinnable.ItemName == def.shortname).Select(skin => System.Convert.ToUInt64(skin.WorkshopdId)).ToList();
 
                     if (skins != null && skins.Count > 0)
                     {
