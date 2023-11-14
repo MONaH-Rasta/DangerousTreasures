@@ -9,11 +9,10 @@ using Oxide.Core.Plugins;
 using Rust;
 using UnityEngine;
 using System.Reflection;
-using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.8")]
+    [Info("Dangerous Treasures", "nivex", "1.2.9")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -1176,24 +1175,24 @@ namespace Oxide.Plugins
             });
         }
 
-        object CanEntityTakeDamage(BaseEntity entity, HitInfo hitInfo)
+        object CanEntityTakeDamage(BaseEntity entity, HitInfo hitInfo) // TruePVE!!!! <3 @ignignokt84
         {
-            if (entity == null || hitInfo == null)
+            if (entity == null || !(entity is BasePlayer) || hitInfo == null)
             {
                 return null;
             }
 
-            if (!(entity is BasePlayer) && !(entity is BaseNpc))
+            if (truePVEServerWidePVP && hitInfo.InitiatorPlayer != null) // 1.2.9
             {
-                return null;
+                return true;
             }
 
-            return EventTerritory(hitInfo.PointStart) && EventTerritory(hitInfo.PointEnd) ? (object)true : null;
+            return truePVEAllowPVPAtEvents && EventTerritory(hitInfo.PointStart) && EventTerritory(hitInfo.PointEnd) ? (object)true : null;
         }
 
         bool EventTerritory(Vector3 position)
         {
-            return treasureChests.Values.Any(chest => Vector3.Distance(new Vector3(chest.containerPos.x, 0f, chest.containerPos.z), new Vector3(position.x, 0f, position.z)) <= eventRadius);
+            return treasureChests.Values.Any(x => Vector3.Distance(x.containerPos, new Vector3(position.x, x.containerPos.y, position.z)) <= eventRadius);
         }
 
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo hitInfo)
@@ -1250,7 +1249,7 @@ namespace Oxide.Plugins
                     Subscribe(nameof(OnPlayerDie));
                 }
 
-                if (truePVE)
+                if (truePVEAllowPVPAtEvents || truePVEServerWidePVP)
                 {
                     Subscribe(nameof(CanEntityTakeDamage));
                 }
@@ -1795,7 +1794,7 @@ namespace Oxide.Plugins
                 return;
 
             var rot = new Quaternion(1f, 0f, 0f, 1f);
-            int amount = spawnNpcsRandomAmount && spawnNpcsAmount > 1 ? UnityEngine.Random.Range(1, spawnNpcsAmount) : spawnNpcsAmount;
+            int amount = spawnNpcsRandomAmount && spawnNpcsAmount > 1 ? UnityEngine.Random.Range(spawnNpcsMinAmount, spawnNpcsAmount) : spawnNpcsAmount;
 
             for (int i = 0; i < amount; i++)
             {
@@ -2576,13 +2575,15 @@ namespace Oxide.Plugins
         static bool spawnScientistsOnly;
         static bool spawnNpcsBoth;
         static int spawnNpcsAmount;
+        static int spawnNpcsMinAmount;
         static bool spawnsDespawnInventory;
         static bool showXZ;
         static bool spawnNpcsRandomAmount;
         bool onlyMonuments;
         float allowMonumentChance;
         static bool undergroundLoot;
-        bool truePVE;
+        bool truePVEAllowPVPAtEvents;
+        bool truePVEServerWidePVP;
         static bool showFirstEntered;
         static List<string> randomNames = new List<string>();
 
@@ -3009,7 +3010,8 @@ namespace Oxide.Plugins
             if (!string.IsNullOrEmpty(szEventConsoleCommand))
                 cmd.AddConsoleCommand(szEventConsoleCommand, this, nameof(ccmdDangerousTreasures));
 
-            truePVE = Convert.ToBoolean(GetConfig("Settings", "Allow PVP with TruePVE", true));
+            truePVEAllowPVPAtEvents = Convert.ToBoolean(GetConfig("TruePVE", "Allow PVP At Events", true));
+            truePVEServerWidePVP = Convert.ToBoolean(GetConfig("TruePVE", "Allow PVP Server-Wide During Events", false));
 
             showBarrage = Convert.ToBoolean(GetConfig("Event Messages", "Show Barrage Message", true));
             showOpened = Convert.ToBoolean(GetConfig("Event Messages", "Show Opened Message", true));
@@ -3113,11 +3115,14 @@ namespace Oxide.Plugins
 
             useGUIAnnouncements = Convert.ToBoolean(GetConfig("GUIAnnouncements", "Enabled", false));
             guiTextColor = Convert.ToString(GetConfig("GUIAnnouncements", "Text Color", "White"));
-            guiTintColor = Convert.ToString(GetConfig("GUIAnnouncements", "Banner Tint Color", "Black"));
+            guiTintColor = Convert.ToString(GetConfig("GUIAnnouncements", "Banner Tint Color", "Grey"));
             guiDrawDistance = Convert.ToSingle(GetConfig("GUIAnnouncements", "Maximum Distance", 300f));
+
+            if (guiTintColor.ToLower() == "black") guiTintColor = "grey";
 
             spawnNpcs = Convert.ToBoolean(GetConfig("NPCs", "Enabled", false));
             spawnNpcsAmount = Convert.ToInt32(GetConfig("NPCs", "Amount To Spawn", 2));
+            spawnNpcsMinAmount = Convert.ToInt32(GetConfig("NPCs", "Minimum Amount To Spawn", 1));
             spawnNpcsBoth = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers And Scientists", false));
             spawnNpcsMurderers = Convert.ToBoolean(GetConfig("NPCs", "Spawn Murderers", false));
             spawnScientistsOnly = Convert.ToBoolean(GetConfig("NPCs", "Spawn Scientists Only", false));
@@ -3128,8 +3133,14 @@ namespace Oxide.Plugins
 
             showXZ = Convert.ToBoolean(GetConfig("Settings", "Show X Z Coordinates", false));
 
+            if (spawnNpcsAmount < 1)
+                spawnNpcs = false;
+
             if (spawnNpcsAmount > 25)
                 spawnNpcsAmount = 25;
+
+            if (spawnNpcsMinAmount < 1 || spawnNpcsMinAmount > spawnNpcsAmount)
+                spawnNpcsMinAmount = 1;
 
             if (Changed)
             {
