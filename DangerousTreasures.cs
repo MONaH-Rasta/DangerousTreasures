@@ -16,7 +16,7 @@ using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.0")]
+    [Info("Dangerous Treasures", "nivex", "2.3.1")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -904,12 +904,12 @@ namespace Oxide.Plugins
 
             private bool IsInSenseRange(Vector3 destination)
             {
-                return InRange(tc.containerPos, destination, SenseRange);
+                return InRange2D(tc.containerPos, destination, SenseRange);
             }
 
             private bool IsInTargetRange(Vector3 destination)
             {
-                return InRange(tc.containerPos, destination, TargetLostRange);
+                return InRange2D(tc.containerPos, destination, TargetLostRange);
             }
 
             private bool IsInThrowRange()
@@ -1143,7 +1143,7 @@ namespace Oxide.Plugins
                         return;
                     }
 
-                    if (!InRange(player.transform.position, chest.containerPos, chest.Radius))
+                    if (!InRange2D(player.transform.position, chest.containerPos, chest.Radius))
                     {
                         return;
                     }
@@ -1248,7 +1248,7 @@ namespace Oxide.Plugins
             {
                 foreach (var x in Instance.treasureChests.Values)
                 {
-                    if (InRange(x.containerPos, target, x.Radius))
+                    if (InRange2D(x.containerPos, target, x.Radius))
                     {
                         return x;
                     }
@@ -1619,7 +1619,7 @@ namespace Oxide.Plugins
                             continue;
                         }
 
-                        if (!InRange(_navHit.position, containerPos, Radius - 2.5f))
+                        if (!InRange2D(_navHit.position, containerPos, Radius - 2.5f))
                         {
                             continue;
                         }
@@ -2191,7 +2191,7 @@ namespace Oxide.Plugins
                 var firePos = firePositions.GetRandom();
                 int retries = firePositions.Count;
 
-                while (InRange(firePos, lastFirePos, Radius * 0.35f) && --retries > 0)
+                while (InRange2D(firePos, lastFirePos, Radius * 0.35f) && --retries > 0)
                 {
                     firePos = firePositions.GetRandom();
                 }
@@ -3150,9 +3150,14 @@ namespace Oxide.Plugins
             }
         }
 
-        static bool InRange(Vector3 a, Vector3 b, float distance)
+        private static bool InRange2D(Vector3 a, Vector3 b, float distance)
         {
             return (new Vector3(a.x, 0f, a.z) - new Vector3(b.x, 0f, b.z)).sqrMagnitude <= distance * distance;
+        }
+
+        private static bool InRange(Vector3 a, Vector3 b, float distance)
+        {
+            return (a - b).sqrMagnitude <= distance * distance;
         }
 
         bool IsMelee(BasePlayer player)
@@ -3241,7 +3246,7 @@ namespace Oxide.Plugins
 
                 foreach (var p in positions)
                 {
-                    if (InRange(p, position, space))
+                    if (InRange2D(p, position, space))
                     {
                         match = p;
                         break;
@@ -3358,7 +3363,7 @@ namespace Oxide.Plugins
         {
             foreach (var x in treasureChests.Values)
             {
-                if (InRange(x.containerPos, vector, x.Radius * multi))
+                if (InRange2D(x.containerPos, vector, x.Radius * multi))
                 {
                     return true;
                 }
@@ -3378,7 +3383,7 @@ namespace Oxide.Plugins
                         return true;
                     }
                 }
-                else if (InRange(zone.Key, vector, zone.Value.Distance))
+                else if (InRange2D(zone.Key, vector, zone.Value.Distance))
                 {
                     return true;
                 }
@@ -3389,7 +3394,7 @@ namespace Oxide.Plugins
 
         bool IsSafeZone(Vector3 a)
         {
-            return TriggerSafeZone.allSafeZones.Exists(triggerSafeZone => InRange(triggerSafeZone.transform.position, a, 200f));
+            return TriggerSafeZone.allSafeZones.Exists(triggerSafeZone => InRange2D(triggerSafeZone.transform.position, a, 200f));
         }
 
         Vector3 GetSafeDropPosition(Vector3 position)
@@ -3464,7 +3469,7 @@ namespace Oxide.Plugins
         {
             foreach (var monument in allowedMonuments)
             {
-                if (!InRange(monument.Value.Position, position, 75f))
+                if (!InRange2D(monument.Value.Position, position, 75f))
                 {
                     continue;
                 }
@@ -3545,7 +3550,7 @@ namespace Oxide.Plugins
 
             foreach (var e in BaseNetworkable.serverEntities.OfType<BaseEntity>())
             {
-                if (!entities.Contains(e) && !e.IsKilled() && InRange(e.transform.position, position, config.Event.Radius))
+                if (!entities.Contains(e) && !e.IsKilled() && InRange2D(e.transform.position, position, config.Event.Radius))
                 {
                     if (e.IsNpc || e is LootContainer)
                     {
@@ -3727,7 +3732,7 @@ namespace Oxide.Plugins
 
             foreach (var x in monuments)
             {
-                if (InRange(x.Value.Position, position, x.Value.Radius))
+                if (InRange2D(x.Value.Position, position, x.Value.Radius))
                 {
                     foreach (var value in config.NPC.BlacklistedMonuments)
                     {
@@ -4374,7 +4379,7 @@ namespace Oxide.Plugins
 
                     foreach (var e in BaseNetworkable.serverEntities.OfType<BaseEntity>())
                     {
-                        if (!entities.Contains(e) && InRange(e.transform.position, player.transform.position, config.Event.Radius))
+                        if (!entities.Contains(e) && InRange2D(e.transform.position, player.transform.position, config.Event.Radius))
                         {
                             if (e.IsNpc || e is LootContainer)
                             {
