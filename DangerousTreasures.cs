@@ -14,13 +14,20 @@ using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
 
+/*
+Fix for Rust update
+Fix for conflicts with Raidable Bases plugin
+Added `Lock Event To Player On Npc Death` (false)
+Added `Lock Event To Player On First Entered` (false)
+*/
+
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.5")]
+    [Info("Dangerous Treasures", "nivex", "2.3.6")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
-        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, Kits, Duelist, RaidableBases, AbandonedBases, Notify, AdvancedAlerts;
+        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, Kits, Duelist, RaidableBases, AbandonedBases, Notify, AdvancedAlerts, Clans, Friends;
 
         private new const string Name = "Dangerous Treasures";
         private static DangerousTreasures Instance;
@@ -1045,6 +1052,7 @@ namespace Oxide.Plugins
 
         public class TreasureChest : FacepunchBehaviour
         {
+            internal ulong userid;
             internal StorageContainer container;
             internal Vector3 containerPos;
             internal Vector3 lastFirePos;
@@ -1521,6 +1529,11 @@ namespace Oxide.Plugins
                 if (players.Contains(player.userID))
                     return;
 
+                if (config.Unlock.LockToPlayerFirstEntered && !userid.IsSteamId())
+                {
+                    userid = player.userID;
+                }
+
                 if (config.EventMessages.FirstEntered && !firstEntered && !player.IsFlying)
                 {
                     firstEntered = true;
@@ -1530,7 +1543,6 @@ namespace Oxide.Plugins
                     }
                 }
 
-                string key;
                 if (config.EventMessages.NoobWarning)
                 {
                     Message(player, whenNpcsDie && npcSpawnedAmount > 0 ? "Npc Event" : requireAllNpcsDie && npcSpawnedAmount > 0 ? "Timed Npc Event" : "Timed Event");
@@ -1957,7 +1969,14 @@ namespace Oxide.Plugins
                     return false;
                 }
 
-                var slot = npc.inventory.FindItemID("hat.miner");
+                var def = ItemManager.FindItemDefinition("hat.miner");
+
+                if (def == null)
+                {
+                    return false;
+                }
+
+                var slot = npc.inventory.FindItemByItemID(def.itemid);
 
                 if (slot == null)
                 {
@@ -2312,7 +2331,7 @@ namespace Oxide.Plugins
                         {
                             Message(target, requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", FormatGridReference(containerPos));
                         }
-                        Puts(Instance.msg(requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", null, FormatGridReference(containerPos)));
+                        Puts(_(requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", null, FormatGridReference(containerPos)));
                     }
 
                     if (config.UnlootedAnnouncements.Enabled)
@@ -2381,6 +2400,14 @@ namespace Oxide.Plugins
                         }
                     });
                 }
+            }
+
+            public void TrySetOwner(HitInfo hitInfo)
+            {
+                if (hitInfo == null || userid.IsSteamId()) return;
+                var attacker = hitInfo.Initiator as BasePlayer;
+                if (attacker == null || !attacker.userID.IsSteamId()) return;
+                userid = attacker.userID;
             }
 
             private void SafelyKill(BaseEntity e) => e.SafelyKill();
@@ -2570,7 +2597,7 @@ namespace Oxide.Plugins
 
         object OnNpcTarget(BasePlayer target, BaseNpc npc) => OnNpcTarget(npc, target);
 
-        void OnPlayerDeath(ScientistNPC npc)
+        void OnPlayerDeath(ScientistNPC npc, HitInfo hitInfo)
         {
             if (npc == null)
             {
@@ -2596,6 +2623,11 @@ namespace Oxide.Plugins
             if (brain.tc.whenNpcsDie && brain.tc.npcs.Count == 0)
             {
                 brain.tc.Unlock();
+            }
+            
+            if (config.Unlock.LockToPlayerOnNpcDeath)
+            {
+                brain.tc.TrySetOwner(hitInfo);
             }
         }
 
@@ -2666,29 +2698,60 @@ namespace Oxide.Plugins
             return null;
         }
 
-        void OnLootEntity(BasePlayer player, BoxStorage container)
+        private bool IsAlly(ulong playerId, ulong targetId)
+        {
+            if (playerId == targetId)
+            {
+                return true;
+            }
+
+            RelationshipManager.PlayerTeam team;
+            if (RelationshipManager.ServerInstance.playerToTeam.TryGetValue(playerId, out team) && team.members.Contains(targetId))
+            {
+                return true;
+            }
+
+            if (Clans.CanCall() && Convert.ToBoolean(Clans?.Call("IsMemberOrAlly", playerId, targetId)))
+            {
+                return true;
+            }
+
+            if (Friends.CanCall() && Convert.ToBoolean(Friends?.Call("AreFriends", playerId.ToString(), targetId.ToString())))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private object CanLootEntity(BasePlayer player, BoxStorage container)
         {
             if (player == null || !container.IsValid() || !treasureChests.ContainsKey(container.net.ID))
-                return;
+                return null;
 
             if (player.isMounted)
             {
                 Message(player, "CannotBeMounted");
-                player.Invoke(player.EndLooting, 0.1f);
-                return;
+                return true;
             }
             else looters[container.net.ID] = player.UserIDString;
 
             if (!config.EventMessages.FirstOpened)
             {
-                return;
+                return null;
             }
 
             var chest = treasureChests[container.net.ID];
 
+            if (chest.userid.IsSteamId() && !IsAlly(chest.userid, player.userID))
+            {
+                Message(player, "CannotBeLooted");
+                return true;
+            }
+
             if (chest.opened)
             {
-                return;
+                return null;
             }
 
             chest.opened = true;
@@ -2698,6 +2761,8 @@ namespace Oxide.Plugins
             {
                 Message(target, "OnChestOpened", player.displayName, posStr);
             }
+
+            return null;
         }
 
         void OnItemRemovedFromContainer(ItemContainer container, Item item)
@@ -2787,7 +2852,24 @@ namespace Oxide.Plugins
 
         object CanEntityTakeDamage(BaseEntity entity, HitInfo hitInfo) // TruePVE!!!! <3 @ignignokt84
         {
-            if (entity.IsKilled() || hitInfo == null || hitInfo.Initiator == null)
+            if (entity.IsKilled() || hitInfo == null || hitInfo.Initiator == null || entity.skinID == 14922524)
+            {
+                return null;
+            }
+
+            var attacker = hitInfo.Initiator as BasePlayer;
+
+            if (attacker != null && attacker.skinID == 14922524)
+            {
+                return null;
+            }
+
+            if (Convert.ToBoolean(RaidableBases?.Call("EventTerritory", hitInfo.Initiator.ServerPosition)))
+            {
+                return null;
+            }
+
+            if (Convert.ToBoolean(RaidableBases?.Call("EventTerritory", entity.ServerPosition)))
             {
                 return null;
             }
@@ -2797,7 +2879,7 @@ namespace Oxide.Plugins
                 return true;
             }
 
-            if (config.TruePVE.ServerWidePVP && treasureChests.Count > 0 && hitInfo.Initiator is BasePlayer && entity is BasePlayer) // 1.2.9 & 1.3.3 & 1.6.4
+            if (config.TruePVE.ServerWidePVP && treasureChests.Count > 0 && attacker != null && entity is BasePlayer) // 1.2.9 & 1.3.3 & 1.6.4
             {
                 return true;
             }
@@ -2809,12 +2891,12 @@ namespace Oxide.Plugins
                     return true;
                 }
 
-                if (config.TruePVE.AllowPVPAtEvents && entity is BasePlayer && hitInfo.Initiator is BasePlayer && EventTerritory(hitInfo.Initiator.transform.position)) // 1.2.9
+                if (config.TruePVE.AllowPVPAtEvents && entity is BasePlayer && attacker != null && EventTerritory(hitInfo.Initiator.transform.position)) // 1.2.9
                 {
                     return true;
                 }
 
-                if (config.TruePVE.AllowBuildingDamageAtEvents && entity.name.Contains("building") && hitInfo.Initiator is BasePlayer && EventTerritory(hitInfo.Initiator.transform.position)) // 1.3.3
+                if (config.TruePVE.AllowBuildingDamageAtEvents && entity.name.Contains("building") && attacker != null && EventTerritory(hitInfo.Initiator.transform.position)) // 1.3.3
                 {
                     return true;
                 }
@@ -3217,7 +3299,7 @@ namespace Oxide.Plugins
                 Subscribe(nameof(CanBradleyApcTarget));
                 Subscribe(nameof(OnEntityTakeDamage));
                 Subscribe(nameof(OnItemRemovedFromContainer));
-                Subscribe(nameof(OnLootEntity));
+                Subscribe(nameof(CanLootEntity));
                 Subscribe(nameof(CanBuild));
                 Subscribe(nameof(CanTeleport));
                 Subscribe(nameof(canTeleport));
@@ -3236,7 +3318,7 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnEntitySpawned));
                 Unsubscribe(nameof(OnEntityTakeDamage));
                 Unsubscribe(nameof(OnItemRemovedFromContainer));
-                Unsubscribe(nameof(OnLootEntity));
+                Unsubscribe(nameof(CanLootEntity));
                 Unsubscribe(nameof(CanBuild));
                 Unsubscribe(nameof(OnPlayerDeath));
             }
@@ -3859,7 +3941,7 @@ namespace Oxide.Plugins
 
             Subscribe(nameof(OnEntityTakeDamage));
             Subscribe(nameof(OnItemRemovedFromContainer));
-            Subscribe(nameof(OnLootEntity));
+            Subscribe(nameof(CanLootEntity));
 
             if (spawnNpcs)
             {
@@ -4649,6 +4731,7 @@ namespace Oxide.Plugins
                 {"OnChestOpened", "<color=#FFFF00>{0}</color> is the first to see the treasures at <color=#FFFF00>{1}</color>!</color>"},
                 {"OnChestDespawned", "The treasures at <color=#FFFF00>{0}</color> have been lost forever! Better luck next time."},
                 {"CannotBeMounted", "You cannot loot the treasure while mounted!"},
+                {"CannotBeLooted", "This treasure does not belong to you!"},
                 {"CannotTeleport", "You are not allowed to teleport from this event."},
                 {"TreasureHunter", "<color=#ADD8E6>{0}</color>. <color=#C0C0C0>{1}</color> (<color=#FFFF00>{2}</color>)"},
                 {"Timed Event", "<color=#FFFF00>You cannot loot until the fire aura expires! Tread lightly, the fire aura is very deadly!</color>)"},
@@ -5680,6 +5763,12 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Require All Npcs Die Before Unlocking")]
             public bool RequireAllNpcsDie { get; set; } = false;
+
+            [JsonProperty(PropertyName = "Lock Event To Player On Npc Death")]
+            public bool LockToPlayerOnNpcDeath { get; set; } = false;
+
+            [JsonProperty(PropertyName = "Lock Event To Player On First Entered")]
+            public bool LockToPlayerFirstEntered { get; set; } = false;
         }
 
         public class UnlootedAnnouncementSettings
