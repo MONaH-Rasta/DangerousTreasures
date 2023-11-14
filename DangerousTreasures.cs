@@ -12,6 +12,10 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.1.2:
+    Cleaned up server console message
+    Fix for incorrect amount of items being spawned when an item amount is 0 in config
+
     2.1.1:
     Added compatibility with NPCKits plugin
     Loot items will no longer spawn when configured amount is 0
@@ -75,7 +79,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.1.1")]
+    [Info("Dangerous Treasures", "nivex", "2.1.2")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -753,6 +757,7 @@ namespace Oxide.Plugins
 
                     if (amount <= 0)
                     {
+                        j--;
                         continue;
                     }
 
@@ -768,12 +773,6 @@ namespace Oxide.Plugins
 
                     ulong skin = lootItem.skin;
                     Item item = ItemManager.CreateByName(itemDef.shortname, amount, skin);
-
-                    if (item == null)
-                    {
-                        ins.PrintError("Invalid item in config, shortname: {0}, amount: {1}, min: {2}, skin: {3}", lootItem.shortname, lootItem.amount, lootItem.amountMin, lootItem.skin);
-                        continue;
-                    }
 
                     if (item.info.stackable > 1 && !item.hasCondition)
                     {
@@ -3343,11 +3342,16 @@ namespace Oxide.Plugins
             if (amount < 1)
                 amount = 1;
 
+            if (treasureChests.Count >= _config.Event.Max)
+            {
+                arg.ReplyWith(RemoveFormatting(msg("Max Manual Events", player?.UserIDString ?? null, _config.Event.Max)));
+                return;
+            }
+
             for (int i = 0; i < amount; i++)
             {
                 if (treasureChests.Count >= _config.Event.Max)
                 {
-                    arg.ReplyWith(msg("Max Manual Events", player?.UserIDString ?? null, _config.Event.Max));
                     break;
                 }
 
@@ -3359,6 +3363,7 @@ namespace Oxide.Plugins
                     num++;
                 }
             }
+
 
             if (position != Vector3.zero)
             {
@@ -3716,7 +3721,7 @@ namespace Oxide.Plugins
 
         string msg(string key, string id = null, params object[] args)
         {
-            string message = _config.EventMessages.Prefix ? lang.GetMessage("MessagePrefix", this, null) + lang.GetMessage(key, this, id) : lang.GetMessage(key, this, id);
+            string message = _config.EventMessages.Prefix && id != null && id != "server_console" ? lang.GetMessage("MessagePrefix", this, null) + lang.GetMessage(key, this, id) : lang.GetMessage(key, this, id);
 
             return message.Contains("{") ? string.Format(message, args) : message;
         }
