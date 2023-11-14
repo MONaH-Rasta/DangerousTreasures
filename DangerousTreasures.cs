@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Facepunch;
@@ -19,7 +19,7 @@ using System.Reflection;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.8")]
+    [Info("Dangerous Treasures", "nivex", "1.3.9")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -2064,6 +2064,11 @@ namespace Oxide.Plugins
         {
             var eventPos = Vector3.zero;
 
+            if (treasureChests.Count >= maxEvents)
+            {
+                return eventPos;
+            }
+            
             if (player)
             {
                 RaycastHit hit;
