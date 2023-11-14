@@ -12,6 +12,14 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.1.5:
+    Fixed `Despawn Inventory On Death`
+    Added `Always Spawn Max Manual Events` (false)
+    Added `Show Thief Message` (true)
+    Added hook: void OnDangerousEventStarted(Vector3 containerPos)
+    Added hook: void OnDangerousEventEnded(Vector3 containerPos)
+    Allowed npc corpses to be harvested in events (TruePVE)
+
     2.1.4:
     Fix for Rust update
 
@@ -89,11 +97,11 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.1.4")]
+    [Info("Dangerous Treasures", "nivex", "2.1.5")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
-        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits;
+        [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits, NPCKits;
 
         void OnPluginLoaded(Plugin plugin)
         {
@@ -555,6 +563,7 @@ namespace Oxide.Plugins
                 DestroySphere();
                 DestroyFire();
                 killed = true;
+                Interface.CallHook("OnDangerousEventEnded", containerPos);
             }
 
             public bool HasRustMarker
@@ -720,6 +729,7 @@ namespace Oxide.Plugins
                 }
 
                 InvokeRepeating(UpdateMarker, 5f, 30f);
+                Interface.CallHook("OnDangerousEventStarted", containerPos);
             }
 
             void Awake()
@@ -1808,11 +1818,6 @@ namespace Oxide.Plugins
             return TreasureChest.HasNPC(entity.GetComponent<NPCPlayerApex>()) ? (object)False : null;
         }
 
-        /*private object OnNpcKits(ulong targetId)
-        {
-            return TreasureChest.HasNPC(targetId) ? (object)True : null;
-        }*/
-
         object CanBeTargeted(BaseEntity npc, MonoBehaviour behaviour)
         {
             var player = npc as BasePlayer;
@@ -1864,7 +1869,7 @@ namespace Oxide.Plugins
             {
                 player.svActiveItemID = 0;
                 player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
-                player.inventory.Strip();
+                if (_config.NPC.DespawnInventory) player.inventory.Strip();
 
                 if (_config.Unlock.WhenNpcsDie && chest.npcs.Count <= 1)
                 {
@@ -2040,10 +2045,14 @@ namespace Oxide.Plugins
                         }
 
                         var posStr = FormatGridReference(looter.transform.position);
+
                         Puts(_("Thief", null, posStr, looter.displayName));
 
-                        foreach (var target in BasePlayer.activePlayerList)
-                            Message(target, msg("Thief", target.UserIDString, posStr, looter.displayName));
+                        if (_config.EventMessages.Thief)
+                        {
+                            foreach (var target in BasePlayer.activePlayerList)
+                                Message(target, msg("Thief", target.UserIDString, posStr, looter.displayName));
+                        }
 
                         looter.EndLooting();
 
@@ -2106,6 +2115,11 @@ namespace Oxide.Plugins
 
             if (EventTerritory(entity.transform.position)) // 1.5.8 & 1.6.4
             {
+                if (entity is NPCPlayerCorpse)
+                {
+                    return true;
+                }
+
                 if (attacker.IsValid())
                 {
                     if (EventTerritory(attacker.transform.position) && _config.TruePVE.AllowPVPAtEvents && entity is BasePlayer) // 1.2.9
@@ -2894,18 +2908,18 @@ namespace Oxide.Plugins
                 SaveData();
             }
 
-            if (storedData.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < _config.Event.Max && _config.Event.Automated)
+            if (_config.Event.Automated && storedData.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < _config.Event.Max && BasePlayer.activePlayerList.Count >= _config.Event.PlayerLimit)
             {
-                if (BasePlayer.activePlayerList.Count >= _config.Event.PlayerLimit)
-                {
-                    for (int retry = 0; retry < 3; retry++) // for servers with high entity counts
-                    {
-                        if (treasureChests.Count >= _config.Event.Max || TryOpenEvent() != null)
-                        {
-                            break;
-                        }
-                    }
+                bool save = false;
 
+                if (_config.Event.SpawnMax)
+                {
+                    save = TryOpenEvent() != null && treasureChests.Count >= _config.Event.Max;
+                }
+                else save = TryOpenEvent() != null;
+
+                if (save)
+                {
                     storedData.SecondsUntilEvent = stamp + eventInterval;
                     Puts(_("Next Automated Event", null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
                     SaveData();
@@ -3841,6 +3855,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Max Manual Events")]
             public int Max { get; set; } = 1;
 
+            [JsonProperty(PropertyName = "Always Spawn Max Manual Events")]
+            public bool SpawnMax { get; set; }
+
             [JsonProperty(PropertyName = "Amount Of Items To Spawn")]
             public int TreasureAmount { get; set; } = 6;
 
@@ -3894,6 +3911,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Show Started Message")]
             public bool Started { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Show Thief Message")]
+            public bool Thief { get; set; } = True;
         }
 
         public class FireballSettings
