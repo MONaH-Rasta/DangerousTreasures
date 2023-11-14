@@ -7,16 +7,21 @@ using Oxide.Core.Configuration;
 using Oxide.Core.Plugins;
 using Rust;
 using UnityEngine;
-using System.Reflection;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
-    2.0.6:
-    Revert collider changes
-    Added check in IsNpcStalled
+    2.0.8:
+    Potential fix for StackoverflowException
 
+    2.0.7:
+    Compile fix
+
+    2.0.6:
+    Reverted collider changes
+    Add check in IsNpcStalled
+    
     2.0.5:
     Possible fix for wipe detection
     Possible fix for OnPlayerDeath
@@ -59,7 +64,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.7")]
+    [Info("Dangerous Treasures", "nivex", "2.0.8")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -516,16 +521,6 @@ namespace Oxide.Plugins
                 }
             }
 
-            bool IsNpcStalled(NPCPlayerApex npc)
-            {
-                if (npc.IsValid() && npc.IsAlive() && npc.lastDealtDamageTime <= 0)
-                {
-                    return True;
-                }
-
-                return False;
-            }
-
             public void Kill()
             {
                 if (killed) return;
@@ -638,6 +633,12 @@ namespace Oxide.Plugins
 
             public void Awaken()
             {
+                var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
+                collider.center = Vector3.zero;
+                collider.radius = Radius;
+                collider.isTrigger = true;
+                collider.enabled = true;
+
                 if (_config.Event.Spheres && _config.Event.SphereAmount > 0)
                 {
                     for (int i = 0; i < _config.Event.SphereAmount; i++)
@@ -701,12 +702,6 @@ namespace Oxide.Plugins
             void Awake()
             {
                 gameObject.layer = (int)Layer.Reserved1;
-                var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
-                collider.center = Vector3.zero;
-                collider.radius = 25f;
-                collider.isTrigger = true;
-                collider.enabled = true;
-                
                 container = GetComponent<StorageContainer>();
                 container.OwnerID = 0;
                 containerPos = container.transform.position;
@@ -1411,15 +1406,9 @@ namespace Oxide.Plugins
                 {
                     foreach (var npc in npcs.ToList())
                     {
-                        if (!npc.IsValid() || npc.IsDestroyed)
+                        if (!npc.IsValid() || npc.IsDestroyed || npc.IsDead())
                         {
                             npcs.Remove(npc);
-                            continue;
-                        }
-
-                        if (IsNpcStalled(npc))
-                        {
-                            npc.Die();
                             continue;
                         }
 
@@ -1842,7 +1831,13 @@ namespace Oxide.Plugins
 
                 if (_config.Unlock.WhenNpcsDie && chest.npcs.Count <= 1)
                 {
-                    chest.Unlock();
+                    NextTick(() =>
+                    {
+                        if (chest != null)
+                        {
+                            chest.Unlock();
+                        }
+                    });
                 }
             }
         }
