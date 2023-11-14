@@ -59,7 +59,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.0.6")]
+    [Info("Dangerous Treasures", "nivex", "2.0.7")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -703,7 +703,7 @@ namespace Oxide.Plugins
                 gameObject.layer = (int)Layer.Reserved1;
                 var collider = gameObject.GetComponent<SphereCollider>() ?? gameObject.AddComponent<SphereCollider>();
                 collider.center = Vector3.zero;
-                collider.radius = eventRadius;
+                collider.radius = 25f;
                 collider.isTrigger = true;
                 collider.enabled = true;
                 
