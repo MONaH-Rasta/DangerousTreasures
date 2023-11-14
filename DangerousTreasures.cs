@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.6")]
+    [Info("Dangerous Treasures", "nivex", "1.2.7")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -120,6 +120,7 @@ namespace Oxide.Plugins
                 missile.explosionRadius = 0f;
                 missile.timerAmountMin = timeUntilExplode;
                 missile.timerAmountMax = timeUntilExplode;
+                
                 missile.damageTypes = new List<DamageTypeEntry>(); // no damage
                 missile.Spawn();
 
@@ -165,7 +166,7 @@ namespace Oxide.Plugins
                     }
 
                     projectile.speed = rocketSpeed * rocketSpeedMulti;
-                    InvokeRepeating(GuideMissile, 0.1f, 0.1f);
+                    InvokeRepeating(new Action(GuideMissile), 0.1f, 0.1f);
                 });
             }
 
@@ -218,7 +219,7 @@ namespace Oxide.Plugins
             {
                 exclude.Clear();
                 launch?.Destroy();
-                CancelInvoke(GuideMissile);
+                CancelInvoke(new Action(GuideMissile));
                 GameObject.Destroy(this);
             }
         }
@@ -237,7 +238,7 @@ namespace Oxide.Plugins
             float lastTick;
             Vector3 lastFirePos;
 
-            Dictionary<ulong, long> fireticks = new Dictionary<ulong, long>();
+            Dictionary<ulong, float> fireticks = new Dictionary<ulong, float>();
             List<FireBall> fireballs = new List<FireBall>();
             List<ulong> players = new List<ulong>();
             List<ulong> newmans = new List<ulong>();
@@ -256,15 +257,27 @@ namespace Oxide.Plugins
             {
                 return npcs.Any(x => x.userID == userID);
             }
-            
+
             public Vector3 GetSpawn()
             {
+                if (monuments.Any(x => Vector3.Distance(x.transform.position, containerPos) < 50f))
+                {
+                    return containerPos;
+                }
+
                 if (spawnpoints == null || spawnpoints.Count == 0)
-                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && !(e is Door) && !(e is ResourceEntity) && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f).Select(e => e.transform.position).ToList();
+                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f && IsValidSpawn(e)).Select(e => new Vector3(e.transform.position.x, e.transform.position.y + 0.25f, e.transform.position.z)).ToList();
 
                 if (!undergroundLoot)
                 {
                     spawnpoints.RemoveAll(e => e.y < containerPos.y);
+                }
+
+                var narrowed = spawnpoints.Where(x => Vector3.Distance(x, containerPos) < 15f).ToList();
+
+                if (narrowed.Count >= spawnNpcsAmount)
+                {
+                    return narrowed.GetRandom();
                 }
 
                 var spawnpoint = spawnpoints.Count > 2 ? spawnpoints.GetRandom() : containerPos;
@@ -323,7 +336,7 @@ namespace Oxide.Plugins
                     firePositions = GetRandomPositions(containerPos, eventRadius, 25, containerPos.y + 25f);
 
                     if (firePositions.Count > 0)
-                        InvokeRepeating(SpawnFire, 0.1f, secondsBeforeTick);
+                        InvokeRepeating(new Action(SpawnFire), 0.1f, secondsBeforeTick);
                 }
 
                 if (launchMissiles)
@@ -332,7 +345,7 @@ namespace Oxide.Plugins
 
                     if (missilePositions.Count > 0)
                     {
-                        InvokeRepeating(LaunchMissile, 0.1f, missileFrequency);
+                        InvokeRepeating(new Action(LaunchMissile), 0.1f, missileFrequency);
                         LaunchMissile();
                     }
                 }
@@ -424,7 +437,7 @@ namespace Oxide.Plugins
                 if (!useFireballs)
                     return;
 
-                long stamp = TimeStamp();
+                float stamp = Time.realtimeSinceStartup;
 
                 if (!fireticks.ContainsKey(player.userID))
                     fireticks[player.userID] = stamp + secondsBeforeTick;
@@ -551,7 +564,7 @@ namespace Oxide.Plugins
                 {
                     ins.Puts(ins.msg(szInvalidConstant, null, fireballPrefab));
                     useFireballs = false;
-                    CancelInvoke(SpawnFire);
+                    CancelInvoke(new Action(SpawnFire));
                     firePositions.Clear();
                     return;
                 }
@@ -581,12 +594,10 @@ namespace Oxide.Plugins
                 unlock?.Destroy();
                 destruct?.Destroy();
 
-                if (container != null)
+                if (container != null && !container.IsDestroyed)
                 {
-                    container.inventory?.Clear();
-
-                    if (!container.IsDestroyed)
-                        container.Kill();
+                    container.inventory.Clear();
+                    container.Kill();
                 }
             }
 
@@ -595,7 +606,7 @@ namespace Oxide.Plugins
                 if (!started)
                     return;
 
-                float time = claimTime - TimeStamp();
+                float time = claimTime - Time.realtimeSinceStartup;
 
                 if (time < 60f)
                     return;
@@ -606,19 +617,16 @@ namespace Oxide.Plugins
                     target.ChatMessage(ins.msg(szDestroyingTreasure, target.UserIDString, eventPos, ins.FormatTime(time, target.UserIDString), szDistanceChatCommand));
             }
 
-            public long UnlockTime
+            public string GetUnlockTime(string userID = null)
             {
-                get
-                {
-                    return this._unlockTime;
-                }
+                return started ? null : ins.FormatTime(_unlockTime - Time.realtimeSinceStartup, userID);
             }
-
+            
             public void SetUnlockTime(float time)
             {
                 var posStr = FormatGridReference(containerPos);
                 countdownTime = Convert.ToInt32(time);
-                _unlockTime = Convert.ToInt64(TimeStamp() + time);
+                _unlockTime = Convert.ToInt64(Time.realtimeSinceStartup + time);
 
                 unlock = ins.timer.Once(time, () =>
                 {
@@ -642,7 +650,7 @@ namespace Oxide.Plugins
 
                     if (useUnclaimedAnnouncements)
                     {
-                        claimTime = TimeStamp() + destructTime;
+                        claimTime = Time.realtimeSinceStartup + destructTime;
                         announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
                     }
                 });
@@ -658,7 +666,7 @@ namespace Oxide.Plugins
 
                         if (started || times.Count == 0)
                         {
-                            countdown?.Destroy();
+                            countdown.Destroy();
                             return;
                         }
 
@@ -679,7 +687,7 @@ namespace Oxide.Plugins
             {
                 if (missilePositions.Count > 0)
                 {
-                    CancelInvoke(LaunchMissile);
+                    CancelInvoke(new Action(LaunchMissile));
                     missilePositions.Clear();
                 }
 
@@ -704,7 +712,7 @@ namespace Oxide.Plugins
             {
                 if (firePositions.Count > 0)
                 {
-                    CancelInvoke(SpawnFire);
+                    CancelInvoke(new Action(SpawnFire));
                     firePositions.Clear();
                 }
 
@@ -762,7 +770,7 @@ namespace Oxide.Plugins
             if (automatedEvents)
             {
                 if (storedData.SecondsUntilEvent != double.MinValue)
-                    if (storedData.SecondsUntilEvent - TimeStamp() > eventIntervalMax) // Allows users to lower max event time
+                    if (storedData.SecondsUntilEvent - Time.realtimeSinceStartup > eventIntervalMax) // Allows users to lower max event time
                         storedData.SecondsUntilEvent = double.MinValue;
 
                 eventTimer = timer.Repeat(1f, 0, () => CheckSecondsUntilEvent());
@@ -1207,6 +1215,17 @@ namespace Oxide.Plugins
                     hitInfo.damageTypes.ScaleAll(0f);
                 }
             }
+
+            var npc = entity as NPCPlayer;
+
+            if (npc == null || !treasureChests.Values.Any(x => x.HasNPC(npc.userID)))
+                return;
+
+            if (hitInfo.hasDamage && hitInfo.damageTypes.GetMajorityDamageType() == DamageType.Heat) // make npc's immune to fire
+            {
+                hitInfo.damageTypes = new DamageTypeList();
+                return;
+            }
         }
 
         void SaveData() => dataFile.WriteObject(storedData);
@@ -1466,15 +1485,13 @@ namespace Oxide.Plugins
                 return Vector3.zero;
             }
 
-            var entities = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && !(e is AutoTurret) && !(e is Door) && !(e is ResourceEntity) && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
+            var entities = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && Vector3.Distance(e.transform.position, monument.transform.position) < eventRadius && IsValidSpawn(e)).ToList();
 
             if (!undergroundLoot)
             {
                 entities.RemoveAll(e => e.transform.position.y < monument.transform.position.y);
             }
-
-            entities.RemoveAll(e => e is BasePlayer && (e as BasePlayer).userID.IsSteamId());
-
+            
             if (entities.Count < 2)
             {
                 var pos = GetRandomMonumentDropPosition(monument.transform.position);
@@ -1494,7 +1511,7 @@ namespace Oxide.Plugins
 
             storage.Add(entity.net.ID);
 
-            return entity.transform.position;
+            return entity.transform.position; // GetComponent<BaseEntity>().WorldSpaceBounds().ToBounds().center;
         }
 
         public Vector3 RandomDropPosition() // CargoPlane.RandomDropPosition()
@@ -1509,8 +1526,6 @@ namespace Oxide.Plugins
             vector.y = 0f;
             return vector;
         }
-
-        static long TimeStamp() => (DateTime.Now.Ticks - DateTime.Parse("01/01/1970 00:00:00").Ticks) / 10000000;
 
         void GetWorkshopIDs(int code, string response)
         {
@@ -1848,7 +1863,7 @@ namespace Oxide.Plugins
         void CheckSecondsUntilEvent()
         {
             var eventInterval = UnityEngine.Random.Range(eventIntervalMin, eventIntervalMax);
-            var stamp = TimeStamp();
+            float stamp = Time.realtimeSinceStartup;
 
             if (storedData.SecondsUntilEvent == double.MinValue) // first time users
             {
@@ -2120,6 +2135,19 @@ namespace Oxide.Plugins
                 }
             }
         }
+        
+        public static bool IsValidSpawn(BaseNetworkable e)
+        {
+            var entity = e as BaseEntity;
+
+            if (!entity || entity.OwnerID.IsSteamId())
+                return false;
+
+            if (e.GetComponentInParent<BasePlayer>() && !e.GetComponentInParent<NPCPlayer>())
+                return false;
+
+            return !(e is AutoTurret) && !(e is Door) && !(e is ResourceEntity);
+        }
 
         void AddItem(BasePlayer player, string[] args)
         {
@@ -2255,7 +2283,7 @@ namespace Oxide.Plugins
 
             if (treasureChests.Count == 0)
             {
-                double time = storedData.SecondsUntilEvent - TimeStamp();
+                double time = storedData.SecondsUntilEvent - Time.realtimeSinceStartup;
 
                 if (time < 0)
                     time = 0;
@@ -2268,9 +2296,8 @@ namespace Oxide.Plugins
             {
                 double distance = Math.Round(Vector3.Distance(player.transform.position, chest.Value.containerPos), 2);
                 string posStr = FormatGridReference(chest.Value.containerPos);
-                long unlockTime = chest.Value.UnlockTime - TimeStamp();
 
-                player.ChatMessage(unlockTime > 0 ? msg(szEventInfo, player.UserIDString, FormatTime(unlockTime, player.UserIDString), posStr, distance, szDistanceChatCommand) : msg(szEventStartedInfo, player.UserIDString, posStr, distance, szDistanceChatCommand));
+                player.ChatMessage(chest.Value.GetUnlockTime() != null ? msg("pInfo", player.UserIDString, chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, szDistanceChatCommand) : msg("pAlready", player.UserIDString, posStr, distance, szDistanceChatCommand));
                 DrawText(player, chest.Value.containerPos, msg(szTreasureChest, player.UserIDString, distance));
             }
         }
