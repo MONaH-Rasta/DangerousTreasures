@@ -1,42 +1,42 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Facepunch;
 using Newtonsoft.Json;
 using Oxide.Core;
+using Oxide.Core.Libraries.Covalence;
 using Oxide.Core.Plugins;
 using Oxide.Plugins.DangerousTreasuresExtensionMethods;
 using Rust;
+using Rust.Ai;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
-using System.Text;
-using Rust.Ai;
-using Facepunch;
-using System.Globalization;
-using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.2")]
+    [Info("Dangerous Treasures", "nivex", "2.3.3")]
     [Description("Event with treasure chests.")]
-    class DangerousTreasures : RustPlugin
+    internal class DangerousTreasures : RustPlugin
     {
         [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, Kits, Duelist, RaidableBases, AbandonedBases, Notify, AdvancedAlerts;
 
         private new const string Name = "Dangerous Treasures";
         private static DangerousTreasures Instance;
         private bool wipeChestsSeed;
-        private StoredData data = new StoredData(); 
+        private StoredData data = new StoredData();
         private List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
         private Dictionary<ulong, HumanoidBrain> HumanoidBrains = new Dictionary<ulong, HumanoidBrain>();
         private Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
         private Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();
         private Dictionary<Vector3, ZoneInfo> managedZones = new Dictionary<Vector3, ZoneInfo>();
-        private Dictionary<uint, MapInfo> mapMarkers = new Dictionary<uint, MapInfo>();
-        private Dictionary<uint, string> lustyMarkers = new Dictionary<uint, string>();
-        private Dictionary<uint, TreasureChest> treasureChests = new Dictionary<uint, TreasureChest>();
-        private Dictionary<uint, string> looters = new Dictionary<uint, string>();
+        private Dictionary<NetworkableId, MapInfo> mapMarkers = new Dictionary<NetworkableId, MapInfo>();
+        private Dictionary<NetworkableId, string> lustyMarkers = new Dictionary<NetworkableId, string>();
+        private Dictionary<NetworkableId, TreasureChest> treasureChests = new Dictionary<NetworkableId, TreasureChest>();
+        private Dictionary<NetworkableId, string> looters = new Dictionary<NetworkableId, string>();
         private Dictionary<string, ItemDefinition> _definitions = new Dictionary<string, ItemDefinition>();
-        private Dictionary<string, SkinInfo> Skins = new Dictionary<string, SkinInfo>(); 
+        private Dictionary<string, SkinInfo> Skins = new Dictionary<string, SkinInfo>();
         private List<ulong> newmanProtections = new List<ulong>();
         private List<ulong> indestructibleWarnings = new List<ulong>(); // indestructible messages limited to once every 10 seconds
         private List<ulong> drawGrants = new List<ulong>(); // limit draw to once every 15 seconds by default
@@ -44,7 +44,7 @@ namespace Oxide.Plugins
         private List<string> _blockedColliders = new List<string> { "powerline_", "invisible_", "TopCol", "train", "swamp_", "floating_" };
         private List<string> underground = new List<string> { "Cave", "Sewer Branch", "Military Tunnel", "Underwater Lab", "Train Tunnel" };
         private List<Vector3> _gridPositions = new List<Vector3>();
-        private const int TARGET_MASK = 8454145; 
+        private const int TARGET_MASK = 8454145;
         private const int targetMask = Layers.Mask.World | Layers.Mask.Terrain | Layers.Mask.Default;
         private const int visibleMask = Layers.Mask.Deployed | Layers.Mask.Construction | targetMask;
         private const int obstructionLayer = Layers.Mask.Player_Server | Layers.Mask.Construction | Layers.Mask.Deployed;
@@ -64,13 +64,13 @@ namespace Oxide.Plugins
         {
             public Vector3 Position;
             public float Radius;
-            public MonInfo (Vector3 pos, float radius)
+            public MonInfo(Vector3 pos, float radius)
             {
                 Position = pos;
                 Radius = radius;
             }
         }
-        
+
         public class SkinInfo
         {
             public List<ulong> skins = new List<ulong>();
@@ -96,14 +96,14 @@ namespace Oxide.Plugins
         }
 
         private class StoredData
-        {            
+        {
             public readonly Dictionary<string, PlayerInfo> Players = new Dictionary<string, PlayerInfo>();
-            public List<uint> TemporaryUID = new List<uint>();
-            public List<uint> Markers = new List<uint>();
+            public List<NetworkableId> NID = new List<NetworkableId>();
+            public List<NetworkableId> MID = new List<NetworkableId>();
             public double SecondsUntilEvent = double.MinValue;
-            public string CustomPosition; 
+            public string CustomPosition;
             public int TotalEvents = 0;
-            public StoredData() { }            
+            public StoredData() { }
         }
 
         public class HumanoidBrain : ScientistBrain
@@ -179,7 +179,10 @@ namespace Oxide.Plugins
                         SetAttackRestrictions(AttackType.BaseProjectile, 30f, 0f, 30f);
                         break;
                     case "ak47u.entity":
+                    case "ak47u_ice.entity":
                     case "bolt_rifle.entity":
+                    case "glock.entity":
+                    case "hmlmg.entity":
                     case "l96.entity":
                     case "lr300.entity":
                     case "m249.entity":
@@ -928,7 +931,7 @@ namespace Oxide.Plugins
             private TimedExplosive missile;
             private ServerProjectile projectile;
             private BaseEntity target;
-            private Vector3 launchPos; 
+            private Vector3 launchPos;
             private List<ulong> newmans = new List<ulong>();
 
             private void Awake()
@@ -1060,7 +1063,7 @@ namespace Oxide.Plugins
             internal float claimTime;
             internal float _radius;
             internal long _unlockTime;
-            internal uint uid;
+            internal NetworkableId uid;
 
             private Dictionary<string, List<string>> npcKits = Pool.Get<Dictionary<string, List<string>>>();
             private Dictionary<ulong, float> fireticks = Pool.Get<Dictionary<ulong, float>>();
@@ -1158,11 +1161,11 @@ namespace Oxide.Plugins
                                 chest.newmans.Add(player.userID);
                             }
 
-                            if (config.NewmanMode.Harm && !Instance.newmanProtections.Contains(player.userID) && !chest.protects.Contains(player.net.ID) && !chest.traitors.Contains(player.userID))
+                            if (config.NewmanMode.Harm && !Instance.newmanProtections.Contains(player.userID) && !chest.protects.Contains(player.userID) && !chest.traitors.Contains(player.userID))
                             {
                                 Message(player, "Newman Protect");
                                 Instance.newmanProtections.Add(player.userID);
-                                chest.protects.Add(player.net.ID);
+                                chest.protects.Add(player.userID);
                             }
 
                             if (!chest.traitors.Contains(player.userID))
@@ -1179,7 +1182,7 @@ namespace Oxide.Plugins
                                 chest.traitors.Add(player.userID);
 
                             Instance.newmanProtections.Remove(player.userID);
-                            chest.protects.Remove(player.net.ID);
+                            chest.protects.Remove(player.userID);
                         }
                     }
 
@@ -1220,7 +1223,7 @@ namespace Oxide.Plugins
                     ItemManager.DoRemoves();
                     container.Kill();
                 }
-                
+
                 RemoveMapMarkers();
                 KillNpc();
                 CancelInvoke();
@@ -1386,6 +1389,11 @@ namespace Oxide.Plugins
                     if (item.info.stackable > 1 && !item.hasCondition)
                     {
                         item.amount = GetPercentIncreasedAmount(amount);
+                    }
+
+                    if (item.hasCondition)
+                    {
+                        item.condition = lootItem.condition * item.info.condition.max;
                     }
 
                     if (config.Treasure.RandomSkins && skin == 0)
@@ -1571,7 +1579,7 @@ namespace Oxide.Plugins
 
                 if (config.NewmanMode.Harm)
                 {
-                    if (protects.Remove(player.net.ID))
+                    if (protects.Remove(player.userID))
                     {
                         Instance.newmanProtections.Remove(player.userID);
                         Message(player, "Newman Protect Fade");
@@ -1771,7 +1779,7 @@ namespace Oxide.Plugins
                 {
                     return null;
                 }
-                
+
                 npc.userID = (ulong)UnityEngine.Random.Range(0, 10000000);
                 npc.UserIDString = npc.userID.ToString();
                 if (isMurderer)
@@ -1903,7 +1911,7 @@ namespace Oxide.Plugins
                 {
                     npc.LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
                 }
-
+                
                 var alternate = isMurderer ? config.NPC.Murderers.Alternate : config.NPC.Scientists.Alternate;
 
                 if (alternate.Enabled && alternate.IDs.Count > 0)
@@ -1981,7 +1989,7 @@ namespace Oxide.Plugins
 
                     if (e.IsReallyValid())
                     {
-                        Instance.data.TemporaryUID.Add(e.net.ID);
+                        Instance.data.NID.Add(e.net.ID);
 
                         if (item.skin != 0)
                         {
@@ -2097,6 +2105,8 @@ namespace Oxide.Plugins
                         vendingMarker.markerShopName = config.Event.MarkerName;
                         vendingMarker.Spawn();
                     }
+
+                    CreateGenericMarker();
                 }
                 else if (config.Event.MarkerExplosion)
                 {
@@ -2107,23 +2117,28 @@ namespace Oxide.Plugins
                         explosionMarker.Spawn();
                         explosionMarker.Invoke(() => explosionMarker.CancelInvoke(explosionMarker.DelayedDestroy), 1f);
                     }
+
+                    CreateGenericMarker();
                 }
 
+                markerCreated = true;
+            }
+
+            private void CreateGenericMarker()
+            {
                 genericMarker = GameManager.server.CreateEntity(StringPool.Get(2849728229), containerPos) as MapMarkerGenericRadius;
 
                 if (genericMarker != null)
                 {
                     genericMarker.alpha = 0.75f;
                     genericMarker.color2 = __(config.Event.MarkerColor);
-                    genericMarker.radius = Mathf.Clamp(config.Event.MarkerRadius, 0.1f, 1f);
+                    genericMarker.radius = Mathf.Min(1f, World.Size <= 3600 ? config.Event.MarkerRadiusSmall : config.Event.MarkerRadius);
                     genericMarker.Spawn();
                     genericMarker.SendUpdate();
                 }
-
-                markerCreated = true;
             }
 
-            void KillNpc()
+            private void KillNpc()
             {
                 npcs.ForEach(npc => npc.SafelyKill());
             }
@@ -2304,6 +2319,7 @@ namespace Oxide.Plugins
                         {
                             Message(target, requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", FormatGridReference(containerPos));
                         }
+                        Puts(Instance.msg(requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", null, FormatGridReference(containerPos)));
                     }
 
                     if (config.UnlootedAnnouncements.Enabled)
@@ -2343,7 +2359,7 @@ namespace Oxide.Plugins
                         requireAllNpcsDie = false;
                     }
                 }
-                
+
                 unlock = Instance.timer.Once(time, Unlock);
 
                 if (config.Countdown.Enabled && config.Countdown.Times?.Count > 0 && countdownTime > 0)
@@ -2432,7 +2448,7 @@ namespace Oxide.Plugins
             LoadData();
             TryWipeData();
             BlockZoneManagerZones();
-            LoadMonuments();                        
+            LoadMonuments();
             RemoveAllTemporaryMarkers();
             InitializeSkins();
             StartAutomation();
@@ -2520,7 +2536,7 @@ namespace Oxide.Plugins
 
             return true;
         }
-        
+
         object OnNpcTarget(BasePlayer player, BasePlayer target)
         {
             if (player == null || target == null)
@@ -2579,7 +2595,7 @@ namespace Oxide.Plugins
                 npc.inventory.Strip();
             }
 
-            npc.svActiveItemID = 0;
+            npc.svActiveItemID = default(ItemId);
             npc.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
 
             brain.tc.npcs.Remove(npc);
@@ -2780,7 +2796,7 @@ namespace Oxide.Plugins
             {
                 return null;
             }
-            
+
             if (entity is ScientistNPC && TreasureChest.HasNPC(entity.ToPlayer().userID))
             {
                 return true;
@@ -2811,7 +2827,7 @@ namespace Oxide.Plugins
 
             return null; // 1.6.4 rewrite
         }
-                
+
         void OnEntityTakeDamage(BasePlayer player, HitInfo hitInfo)
         {
             if (player == null || hitInfo == null)
@@ -2820,7 +2836,7 @@ namespace Oxide.Plugins
             }
 
             if (TreasureChest.HasNPC(player.userID))
-            {                
+            {
                 NpcDamageHelper(player, hitInfo);
                 return;
             }
@@ -2916,16 +2932,16 @@ namespace Oxide.Plugins
 
             sd_customPos = string.IsNullOrEmpty(data.CustomPosition) ? Vector3.zero : data.CustomPosition.ToVector3();
 
-            if (data == null || data.Players == null || data.TemporaryUID == null)
+            if (data == null || data.Players == null || data.NID == null)
             {
                 data = new StoredData();
             }
-            
-            if (data.TemporaryUID.Count > 0)
+
+            if (data.NID.Count > 0)
             {
-                foreach (uint uid in data.TemporaryUID.ToList())
+                foreach (var uid in data.NID.ToList())
                 {
-                    data.TemporaryUID.Remove(uid);
+                    data.NID.Remove(uid);
                     BaseNetworkable.serverEntities.Find(uid).SafelyKill();
                 }
             }
@@ -3230,7 +3246,7 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnPlayerDeath));
             }
         }
-        
+
         static List<Vector3> GetRandomPositions(Vector3 destination, float radius, int amount, float y)
         {
             var positions = new List<Vector3>();
@@ -3527,8 +3543,13 @@ namespace Oxide.Plugins
             return false;
         }
 
-        Vector3 GetMonumentDropPosition()
+        Vector3 GetMonumentDropPosition(int retry = 0)
         {
+            if (retry >= 100)
+            {
+                return Vector3.zero;
+            }
+
             var list = allowedMonuments.ToList();
             var position = Vector3.zero;
 
@@ -3572,10 +3593,10 @@ namespace Oxide.Plugins
             if (entities.Count < 2)
             {
                 position = GetRandomMonumentDropPosition(position);
-                
+
                 Pool.FreeList(ref entities);
 
-                return position == Vector3.zero ? GetMonumentDropPosition() : position;
+                return position == Vector3.zero ? GetMonumentDropPosition(++retry) : position;
             }
 
             var entity = entities.GetRandom();
@@ -3627,7 +3648,7 @@ namespace Oxide.Plugins
                 {
                     return null;
                 }
-                
+
                 eventPos = hit.point;
             }
             else
@@ -3656,7 +3677,7 @@ namespace Oxide.Plugins
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
             chest.Radius = config.Event.Radius;
-            
+
             chest.SpawnLoot(container, ChestLoot);
 
             if (config.Skins.PresetSkin != 0uL)
@@ -3682,12 +3703,12 @@ namespace Oxide.Plugins
                 BaseEntity.saveList.Remove(container);
             }
 
-            uint uid = container.net.ID;
+            var uid = container.net.ID;
             float unlockTime = UnityEngine.Random.Range(config.Unlock.MinTime, config.Unlock.MaxTime);
 
             SubscribeHooks(true);
             treasureChests.Add(uid, chest);
-            
+
             var posStr = FormatGridReference(container.transform.position);
             Puts("{0}: {1}", posStr, string.Join(", ", container.inventory.itemList.Select(item => string.Format("{0} ({1})", item.info.displayName.translated, item.amount))));
 
@@ -3995,7 +4016,7 @@ namespace Oxide.Plugins
             foreach (var x in Instance.monuments) // request MrSmallZzy
             {
                 float magnitude = x.Value.Position.Distance(position);
-                
+
                 if (magnitude <= x.Value.Radius && magnitude < distance)
                 {
                     monumentName = (x.Key.Contains(":") ? x.Key.Substring(0, x.Key.LastIndexOf(":")) : x.Key).TrimEnd();
@@ -4080,14 +4101,14 @@ namespace Oxide.Plugins
             return true;
         }
 
-        void AddMapMarker(Vector3 position, uint uid)
+        void AddMapMarker(Vector3 position, NetworkableId uid)
         {
             mapMarkers[uid] = new MapInfo { IconName = config.LustyMap.IconName, Position = position, Url = config.LustyMap.IconFile };
             Map?.Call("ApiAddPointUrl", config.LustyMap.IconFile, config.LustyMap.IconName, position);
-            data.Markers.Add(uid);
+            data.MID.Add(uid);
         }
 
-        void RemoveMapMarker(uint uid)
+        void RemoveMapMarker(NetworkableId uid)
         {
             if (!mapMarkers.ContainsKey(uid))
                 return;
@@ -4096,36 +4117,36 @@ namespace Oxide.Plugins
 
             Map?.Call("ApiRemovePointUrl", mapInfo.Url, mapInfo.IconName, mapInfo.Position);
             mapMarkers.Remove(uid);
-            data.Markers.Remove(uid);
+            data.MID.Remove(uid);
         }
 
-        void AddLustyMarker(Vector3 pos, uint uid)
+        void AddLustyMarker(Vector3 pos, NetworkableId uid)
         {
             string name = string.Format("{0}_{1}", config.LustyMap.IconName, data.TotalEvents).ToLower();
 
             LustyMap?.Call("AddTemporaryMarker", pos.x, pos.z, name, config.LustyMap.IconFile, config.LustyMap.IconRotation);
             lustyMarkers[uid] = name;
-            data.Markers.Add(uid);
+            data.MID.Add(uid);
         }
 
-        void RemoveLustyMarker(uint uid)
+        void RemoveLustyMarker(NetworkableId uid)
         {
             if (!lustyMarkers.ContainsKey(uid))
                 return;
 
             LustyMap?.Call("RemoveTemporaryMarker", lustyMarkers[uid]);
             lustyMarkers.Remove(uid);
-            data.Markers.Remove(uid);
+            data.MID.Remove(uid);
         }
 
         void RemoveAllTemporaryMarkers()
         {
-            if (data.Markers.Count == 0)
+            if (data.MID.Count == 0)
                 return;
 
             if (LustyMap.CanCall())
             {
-                foreach (uint marker in data.Markers)
+                foreach (var marker in data.MID)
                 {
                     LustyMap.Call("RemoveMarker", marker.ToString());
                 }
@@ -4133,13 +4154,13 @@ namespace Oxide.Plugins
 
             if (Map.CanCall())
             {
-                foreach (uint marker in data.Markers.ToList())
+                foreach (var marker in data.MID.ToList())
                 {
                     RemoveMapMarker(marker);
                 }
             }
 
-            data.Markers.Clear();
+            data.MID.Clear();
             SaveData();
         }
 
@@ -4157,7 +4178,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            data.Markers.Clear();
+            data.MID.Clear();
 
             if (removed > 0)
             {
@@ -4351,11 +4372,11 @@ namespace Oxide.Plugins
                         }
                     }
 
-                    if (position != Vector3.zero) 
+                    if (position != Vector3.zero)
                     {
-                        if (player.IsFlying) 
+                        if (player.IsFlying)
                         {
-                            player.Teleport(position.y > player.transform.position.y ? position : position.WithY(player.transform.position.y)); 
+                            player.Teleport(position.y > player.transform.position.y ? position : position.WithY(player.transform.position.y));
                         }
                         else player.Teleport(position);
                     }
@@ -4559,7 +4580,7 @@ namespace Oxide.Plugins
             }
 
             var chest = TryOpenEvent(args.Length == 1 && args[0] == "me" && player.IsAdmin ? player : null);
-            
+
             if (chest != null)
             {
                 if (args.Length == 1 && args[0].ToLower() == "tp" && player.IsAdmin)
@@ -4935,6 +4956,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Marker Radius")]
             public float MarkerRadius { get; set; } = 0.25f;
 
+            [JsonProperty(PropertyName = "Marker Radius (Smaller Maps)")]
+            public float MarkerRadiusSmall { get; set; } = 0.5f;
+
             [JsonProperty(PropertyName = "Marker Event Name")]
             public string MarkerName { get; set; } = "Dangerous Treasures Event";
 
@@ -5255,6 +5279,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "AK47")]
             public double AK47 { get; set; }
 
+            [JsonProperty(PropertyName = "AK47 ICE")]
+            public double AK47ICE { get; set; }
+
             [JsonProperty(PropertyName = "Bolt Rifle")]
             public double BOLT_RIFLE { get; set; }
 
@@ -5269,6 +5296,12 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Eoka")]
             public double EOKA { get; set; }
+
+            [JsonProperty(PropertyName = "Glock")]
+            public double GLOCK { get; set; }
+
+            [JsonProperty(PropertyName = "HMLMG")]
+            public double HMLMG { get; set; }
 
             [JsonProperty(PropertyName = "L96")]
             public double L96 { get; set; }
@@ -5326,7 +5359,7 @@ namespace Oxide.Plugins
 
             public NpcSettingsAccuracy(double accuracy)
             {
-                AK47 = BOLT_RIFLE = COMPOUND_BOW = CROSSBOW = DOUBLE_SHOTGUN = EOKA = L96 = LR300 = M249 = M39 = M92 = MP5 = NAILGUN = PUMP_SHOTGUN = PYTHON = REVOLVER = SEMI_AUTO_PISTOL = SEMI_AUTO_RIFLE = SPAS12 = SPEARGUN = SMG = SNOWBALL_GUN = THOMPSON = WATERPIPE_SHOTGUN = accuracy;
+                AK47 = AK47ICE = BOLT_RIFLE = COMPOUND_BOW = CROSSBOW = DOUBLE_SHOTGUN = EOKA = GLOCK = HMLMG = L96 = LR300 = M249 = M39 = M92 = MP5 = NAILGUN = PUMP_SHOTGUN = PYTHON = REVOLVER = SEMI_AUTO_PISTOL = SEMI_AUTO_RIFLE = SPAS12 = SPEARGUN = SMG = SNOWBALL_GUN = THOMPSON = WATERPIPE_SHOTGUN = accuracy;
             }
 
             public double Get(HumanoidBrain brain)
@@ -5334,10 +5367,13 @@ namespace Oxide.Plugins
                 switch (brain.AttackEntity?.ShortPrefabName)
                 {
                     case "ak47u.entity": return AK47;
+                    case "ak47u_ice.entity": return AK47ICE;
                     case "bolt_rifle.entity": return BOLT_RIFLE;
                     case "compound_bow.entity": return COMPOUND_BOW;
                     case "crossbow.entity": return CROSSBOW;
                     case "double_shotgun.entity": return DOUBLE_SHOTGUN;
+                    case "glock.entity": return GLOCK;
+                    case "hmlmg.entity": return HMLMG;
                     case "l96.entity": return L96;
                     case "lr300.entity": return LR300;
                     case "m249.entity": return M249;
@@ -5364,8 +5400,8 @@ namespace Oxide.Plugins
         public class NpcSettingsMurderer
         {
             [JsonProperty(PropertyName = "Random Names", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> RandomNames { get; set; } = new List<string>(); 
-            
+            public List<string> RandomNames { get; set; } = new List<string>();
+
             [JsonProperty(PropertyName = "Items)")]
             public MurdererKitSettings Items { get; set; } = new MurdererKitSettings();
 
@@ -5400,8 +5436,8 @@ namespace Oxide.Plugins
         public class NpcSettingsScientist
         {
             [JsonProperty(PropertyName = "Random Names", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> RandomNames { get; set; } = new List<string>(); 
-            
+            public List<string> RandomNames { get; set; } = new List<string>();
+
             [JsonProperty(PropertyName = "Items")]
             public ScientistKitSettings Items { get; set; } = new ScientistKitSettings();
 
@@ -5413,7 +5449,7 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Weapon Accuracy (0 - 100)")]
             public NpcSettingsAccuracy Accuracy { get; set; } = new NpcSettingsAccuracy(20);
-            
+
             [JsonProperty(PropertyName = "Aggression Range")]
             public float AggressionRange { get; set; } = 70f;
 
@@ -5425,7 +5461,7 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Amount To Spawn (min)")]
             public int SpawnMinAmount { get; set; } = 2;
-            
+
             [JsonProperty(PropertyName = "Amount To Spawn (max)")]
             public int SpawnAmount { get; set; } = 2;
 
@@ -5557,6 +5593,7 @@ namespace Oxide.Plugins
             public int amount { get; set; }
             public ulong skin { get; set; }
             public int amountMin { get; set; }
+            public float condition { get; set; } = 1f;
             public float probability { get; set; } = 1f;
             [JsonProperty(PropertyName = "Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<ulong> skins { get; set; } = new List<ulong>();
@@ -5749,6 +5786,16 @@ namespace Oxide.Plugins
             if (config.MissileLauncher.Distance < 1f) config.MissileLauncher.Distance = 15f;
             if (config.MissileLauncher.Distance > config.Event.Radius * 15) config.MissileLauncher.Distance = config.Event.Radius * 2;
             if (config.LustyMap.IconFile == "special") config.LustyMap.IconFile = "http://i.imgur.com/XoEMTJj.png";
+
+            if (config.NPC.Murderers.Accuracy.GLOCK == 0f)
+            {
+                config.NPC.Murderers.Accuracy.AK47ICE = config.NPC.Murderers.Accuracy.GLOCK = config.NPC.Murderers.Accuracy.HMLMG = 100f;
+            }
+
+            if (config.NPC.Scientists.Accuracy.GLOCK == 0f)
+            {
+                config.NPC.Scientists.Accuracy.AK47ICE = config.NPC.Scientists.Accuracy.GLOCK = config.NPC.Scientists.Accuracy.HMLMG = 20f;
+            }
 
             if (!string.IsNullOrEmpty(config.Settings.PermName) && !permission.PermissionExists(config.Settings.PermName)) permission.RegisterPermission(config.Settings.PermName, this);
             if (!string.IsNullOrEmpty(config.Settings.EventChatCommand)) cmd.AddChatCommand(config.Settings.EventChatCommand, this, cmdDangerousTreasures);
