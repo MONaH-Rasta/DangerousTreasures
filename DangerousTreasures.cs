@@ -12,6 +12,13 @@ using UnityEngine.SceneManagement;
 using System.Text;
 
 /*
+    2.1.3:
+    Fix for OnNpcTarget
+    Fix for OnEntityTakeDamage
+    Fix for NPC Kits compatibility
+    Fix for container skin not updating
+    Added `Scientist Weapon Accuracy (0-100)` (75)
+
     2.1.2:
     Cleaned up server console message
     Fix for incorrect amount of items being spawned when an item amount is 0 in config
@@ -79,7 +86,7 @@ using System.Text;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.1.2")]
+    [Info("Dangerous Treasures", "nivex", "2.1.3")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -866,6 +873,8 @@ namespace Oxide.Plugins
 
             public void SpawnNpcs()
             {
+                container.SendNetworkUpdate();
+
                 if (_config.NPC.SpawnAmount < 1 || !_config.NPC.Enabled)
                     return;
 
@@ -1085,28 +1094,22 @@ namespace Oxide.Plugins
                     return;
                 }
 
-                if (apex.GetFact(NPCPlayerApex.Facts.IsAggro) == 0 || apex.CombatTarget == null)
+                if (apex.AttackTarget == null)
                 {
+                    apex.NeverMove = true;
                     float distance = (apex.transform.position - pos).magnitude;
                     bool tooFar = distance > Radius; // * 1.25f;
 
-                    if (distance > Radius)
-                    {
-                        //pos = GetRandomPoint;
+                    if (apex.GetNavAgent == null || !apex.GetNavAgent.isOnNavMesh)
+                        apex.finalDestination = pos;
+                    else apex.GetNavAgent.SetDestination(pos);
 
-                        if (apex.GetNavAgent == null || !apex.GetNavAgent.isOnNavMesh)
-                            apex.finalDestination = pos;
-                        else apex.GetNavAgent.SetDestination(pos);
-
-                        apex.Destination = pos;
-                        apex.SetFact(NPCPlayerApex.Facts.Speed, tooFar ? (byte)NPCPlayerApex.SpeedEnum.Run : (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
-                    }
-
-                    //apex.clothingMoveSpeedReduction = murd ? (tooFar ? -_config.NPC.MurdererSpeedSprinting : -_config.NPC.MurdererSpeedWalking) : (tooFar ? -_config.NPC.ScientistSpeedSprinting : -_config.NPC.ScientistSpeedWalking);
+                    apex.Destination = pos;
+                    apex.SetFact(NPCPlayerApex.Facts.Speed, tooFar ? (byte)NPCPlayerApex.SpeedEnum.Run : (byte)NPCPlayerApex.SpeedEnum.Walk, true, true);
                 }
-                //else apex.clothingMoveSpeedReduction = 0f;
+                else apex.NeverMove = false;
 
-                ins.timer.Once(2f, () => UpdateDestination(apex, pos, murd));
+                ins.timer.Once(7.5f, () => UpdateDestination(apex, pos, murd));
             }
 
             public void UpdateMarker()
@@ -1802,10 +1805,10 @@ namespace Oxide.Plugins
             return TreasureChest.HasNPC(entity.GetComponent<NPCPlayerApex>()) ? (object)False : null;
         }
 
-        private object OnNpcKits(ulong targetId)
+        /*private object OnNpcKits(ulong targetId)
         {
             return TreasureChest.HasNPC(targetId) ? (object)True : null;
-        }
+        }*/
 
         object CanBeTargeted(BaseEntity npc, MonoBehaviour behaviour)
         {
@@ -1818,28 +1821,28 @@ namespace Oxide.Plugins
 
             return EventTerritory(npc.transform.position, 10f) ? (object)False : null;
         }
-
+        
         object OnNpcTarget(BaseEntity npc, BaseEntity target)
         {
             var p1 = npc as BasePlayer;
             var p2 = target as BasePlayer;
 
-            if (p1 && p2)
+            if (p1.IsValid() && p2.IsValid())
             {
                 if (TreasureChest.HasNPC(p1.userID, p2.userID))
                 {
                     return True;
                 }
-                else if (p2.net != null && newmanProtections.Contains(p2.net.ID))
+                else if (newmanProtections.Contains(p2.net.ID))
                 {
                     return True;
                 }
             }
-            else if (p1 && target.IsNpc)
+            else if (p1.IsValid() && target.IsValid() && target.IsNpc)
             {
                 return TreasureChest.HasNPC(p1.userID) ? (object)True : null;
             }
-            else if (p2 && npc.IsNpc)
+            else if (p2.IsValid() && npc.IsValid() && npc.IsNpc)
             {
                 return TreasureChest.HasNPC(p2.userID) ? (object)True : null;
             }
@@ -1858,6 +1861,7 @@ namespace Oxide.Plugins
             {
                 player.svActiveItemID = 0;
                 player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+                player.inventory.Strip();
 
                 if (_config.Unlock.WhenNpcsDie && chest.npcs.Count <= 1)
                 {
@@ -2090,7 +2094,7 @@ namespace Oxide.Plugins
                 return null;
             }
 
-            var attacker = hitInfo.InitiatorPlayer;
+            var attacker = hitInfo.Initiator as BasePlayer;
 
             if (_config.TruePVE.ServerWidePVP && attacker.IsValid() && entity is BasePlayer && treasureChests.Count > 0) // 1.2.9 & 1.3.3 & 1.6.4
             {
@@ -2146,19 +2150,18 @@ namespace Oxide.Plugins
 
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo hitInfo)
         {
-            if (!init || entity?.net == null)
+            if (!init || !entity.IsValid() || hitInfo == null)
                 return;
 
             bool isNewman = newmanProtections.Contains(entity.net.ID);
             bool isChest = treasureChests.ContainsKey(entity.net.ID);
+            var attacker = hitInfo.InitiatorPlayer;
 
             if (isNewman || isChest)
             {
-                var attacker = hitInfo?.InitiatorPlayer;
-
-                if (attacker != null)
+                if (attacker.IsValid())
                 {
-                    if (hitInfo != null && hitInfo.hasDamage)
+                    if (hitInfo.hasDamage)
                     {
                         hitInfo.damageTypes.ScaleAll(0f);
                     }
@@ -2179,12 +2182,21 @@ namespace Oxide.Plugins
                 }
             }
 
+            if (attacker.IsValid() && attacker is Scientist && TreasureChest.HasNPC(attacker as NPCPlayerApex) && _config.NPC.Accuracy < UnityEngine.Random.Range(0f, 100f))
+            {
+                hitInfo.damageTypes = new DamageTypeList(); // don't hurt a player when the shot misses
+                hitInfo.DidHit = False;
+                hitInfo.DoHitEffects = False;
+                hitInfo.HitEntity = null;
+                return;
+            }
+
             var npc = entity as NPCPlayerApex;
 
             if (!TreasureChest.HasNPC(npc))
                 return;
 
-            if (hitInfo.hasDamage && hitInfo.InitiatorPlayer == null) // make npc's immune to fire/explosions/other
+            if (hitInfo.hasDamage && !attacker.IsValid()) // make npc's immune to fire/explosions/other
             {
                 hitInfo.damageTypes = new DamageTypeList();
             }
@@ -2660,7 +2672,10 @@ namespace Oxide.Plugins
                 var skins = GetItemSkins(boxDef);
 
                 if (skins.Count > 0)
+                {
                     container.skinID = skins.GetRandom();
+                    container.SendNetworkUpdate();
+                }
             }
 
             container.SetFlag(BaseEntity.Flags.Locked, true);
@@ -3723,7 +3738,7 @@ namespace Oxide.Plugins
         {
             string message = _config.EventMessages.Prefix && id != null && id != "server_console" ? lang.GetMessage("MessagePrefix", this, null) + lang.GetMessage(key, this, id) : lang.GetMessage(key, this, id);
 
-            return message.Contains("{") ? string.Format(message, args) : message;
+            return message.Contains("{0}") ? string.Format(message, args) : message;
         }
 
         string RemoveFormatting(string source) => source.Contains(">") ? System.Text.RegularExpressions.Regex.Replace(source, "<.*?>", string.Empty) : source;
@@ -3993,6 +4008,9 @@ namespace Oxide.Plugins
         {
             [JsonProperty(PropertyName = "Enabled")]
             public bool Enabled { get; set; } = True;
+
+            [JsonProperty(PropertyName = "Scientist Weapon Accuracy (0 - 100)")]
+            public float Accuracy { get; set; } = 75f;
 
             [JsonProperty(PropertyName = "Spawn Murderers")]
             public bool SpawnMurderers { get; set; } = False;
