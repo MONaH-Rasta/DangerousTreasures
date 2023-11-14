@@ -13,7 +13,7 @@ using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.2.1")]
+    [Info("Dangerous Treasures", "nivex", "1.2.2")]
     [Description("Event with treasure chests.")]
     public class DangerousTreasures : RustPlugin
     {
@@ -258,12 +258,12 @@ namespace Oxide.Plugins
             
             public Vector3 GetSpawn()
             {
-                if (spawnpoints == null)
-                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && e.net != null && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f).Select(e => e.transform.position).ToList();
+                if (spawnpoints == null || spawnpoints.Count == 0)
+                    spawnpoints = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && !(e is Door) && !(e is ResourceEntity) && Vector3.Distance(e.transform.position, containerPos) < eventRadius * 0.75f).Select(e => e.transform.position).ToList();
 
                 if (!undergroundLoot)
                 {
-                    spawnpoints.RemoveAll(sc => sc.y < containerPos.y);
+                    spawnpoints.RemoveAll(e => e.y < containerPos.y);
                 }
 
                 var spawnpoint = spawnpoints.Count > 2 ? spawnpoints.GetRandom() : containerPos;
@@ -854,17 +854,25 @@ namespace Oxide.Plugins
                     Puts("Blocking events at zones: {0}", string.Join(", ", managedZones.Select(zone => string.Format("{0} ({1}: {2}m)", zone.Key.ToString().Replace("(", "").Replace(")", ""), FormatGridReference(zone.Key), zone.Value)).ToArray()));
             }
 
-            var list = new List<string>();
-
             if (!undergroundLoot)
-                list.Add("Sewer");
-
-            monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap && !list.Any(x => info.displayPhrase.english.Contains(x))).ToList());
+                blacklistedMonuments.Add("Sewer");
             
+            monuments.AddRange(UnityEngine.Object.FindObjectsOfType<MonumentInfo>().Where(info => info?.transform != null && info.shouldDisplayOnMap).ToList());
+
             if (monuments.Count == 0)
             {                
                 onlyMonuments = false;
                 allowMonumentChance = 0f;
+            }
+            else
+            {
+                foreach (var m in monuments.ToList())
+                {
+                    if (blacklistedMonuments.Any(x => m.displayPhrase.english.ToLower().Trim() == x.ToLower().Trim()))
+                    {
+                        monuments.Remove(m);
+                    }
+                }
             }
 
             if (includeWorkshopBox || includeWorkshopTreasure)
@@ -1403,33 +1411,64 @@ namespace Oxide.Plugins
             return blocked;
         }
 
+        public Vector3 GetRandomMonumentDropPosition(Vector3 position)
+        {
+            if (monuments.Any(m => Vector3.Distance(m.transform.position, position) < 75f))
+            {
+                var monument = monuments.First(m => Vector3.Distance(m.transform.position, position) < 75f);
+                int attempts = 100;
+
+                while (--attempts > 0)
+                {
+                    var randomPoint = monument.transform.position + UnityEngine.Random.insideUnitSphere * 75f;
+                    randomPoint.y = 100f;
+
+                    RaycastHit hit;
+                    if (Physics.Raycast(randomPoint, Vector3.down, out hit, 100.5f, heightMask, QueryTriggerInteraction.Ignore))
+                    {
+                        if (hit.point.y - TerrainMeta.HeightMap.GetHeight(hit.point) < 3f)
+                        {
+                            return hit.point;
+                        }
+                    }
+                }
+            }
+
+            return Vector3.zero;
+        }
+
         public Vector3 GetMonumentDropPosition()
         {
             var monument = monuments.GetRandom();
-            var containers = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && e.net != null && e is StorageContainer && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
+            var entities = BaseNetworkable.serverEntities.Where(e => e != null && e.transform != null && !(e is AutoTurret) && !(e is Door) && !(e is ResourceEntity) && Vector3.Distance(e.transform.position, monument.transform.position) < 75f).ToList();
 
             if (!undergroundLoot)
             {
-                containers.RemoveAll(sc => sc.transform.position.y < monument.transform.position.y);
+                entities.RemoveAll(e => e.transform.position.y < monument.transform.position.y);
             }
 
-            if (containers.Count < 2)
+            entities.RemoveAll(e => e is BasePlayer && (e as BasePlayer).userID.IsSteamId());
+
+            if (entities.Count < 2)
             {
-                var pos = GetGroundPosition(monument.transform.position);
+                var pos = GetRandomMonumentDropPosition(monument.transform.position);
                 return pos == Vector3.zero ? GetMonumentDropPosition() : pos;
             }
 
-            var container = containers.GetRandom();
-
-            while (containers.Count > 1 && treasureChests.Values.Any(x => Vector3.Distance(x.containerPos, container.transform.position) < eventRadius))
-            {
-                containers.Remove(container);
-                container = containers.GetRandom();
-            }
+            var entity = entities.GetRandom();
             
-            storage.Add(container.net.ID);
+            while (entities.Count > 1 && treasureChests.Values.Any(x => Vector3.Distance(x.containerPos, entity.transform.position) < eventRadius))
+            {
+                entities.Remove(entity);
+                entity = entities.GetRandom();
+            }
 
-            return container.transform.position;
+            if (entity.net == null)
+                entity.net = Network.Net.sv.CreateNetworkable();
+
+            storage.Add(entity.net.ID);
+
+            return entity.transform.position;
         }
 
         public Vector3 RandomDropPosition() // CargoPlane.RandomDropPosition()
@@ -1680,9 +1719,12 @@ namespace Oxide.Plugins
 
             string monumentName = monuments.FirstOrDefault(monument => Vector3.Distance(monument.transform.position, position) <= 75f)?.displayPhrase?.translated;
 
-            if (!string.IsNullOrEmpty(monumentName) && monumentName.Contains("Bandit Camp"))
+            if (!string.IsNullOrEmpty(monumentName))
             {
-                return position;
+                if (blacklistedNPCMonuments.Any(x => monumentName.ToLower().Trim() == x.ToLower().Trim()))
+                {
+                    return position;
+                }
             }
 
             SpawnNPCS(position, treasureChest);
@@ -1773,26 +1815,6 @@ namespace Oxide.Plugins
             }
 
             ins.timer.Once(10f, () => UpdateDestination(apex, pos, chest));
-        }
-        
-        static Vector3 GetGroundPosition(Vector3 center)
-        {
-            var spawnPoint = Vector3.zero;
-
-            for (int i = 0; i < 50; i++)
-            {
-                var randomPoint = center + UnityEngine.Random.insideUnitSphere * (eventRadius * 0.85f);
-                float y = TerrainMeta.HeightMap.GetHeight(center);
-                spawnPoint = new Vector3(randomPoint.x, y + 300f, randomPoint.z);
-
-                RaycastHit hit;
-                if (Physics.Raycast(spawnPoint, Vector3.down, out hit, y + 300f, LayerMask.GetMask("Terrain", "World", "Construction", "Deployed"), QueryTriggerInteraction.Ignore))
-                {
-                    return new Vector3(spawnPoint.x, Mathf.Max(hit.point.y, y), spawnPoint.z);
-                }
-            }
-
-            return Vector3.zero;
         }
         
         void CheckSecondsUntilEvent()
@@ -2237,6 +2259,11 @@ namespace Oxide.Plugins
 
             if (arg.HasArgs() && arg.Args.Length == 1 && arg.Args[0].ToLower() == "help")
             {
+                if (arg.IsRcon || arg.IsServerside)
+                {
+                    Puts("Monuments:");
+                    foreach (var m in monuments) Puts(m.displayPhrase.english);
+                }
                 arg.ReplyWith(msg(szHelp, player?.UserIDString ?? null, szEventChatCommand));
                 return;
             }
@@ -2299,7 +2326,8 @@ namespace Oxide.Plugins
             if (args.Length == 1)
             {
                 if (args[0].ToLower() == "help")
-                {
+                {                    
+                    player.ChatMessage("Monuments: " + string.Join(", ", monuments.Select(m => m.displayPhrase.english)));
                     player.ChatMessage(msg(szHelp, player.UserIDString, szEventChatCommand));
                     return;
                 }
@@ -2399,6 +2427,8 @@ namespace Oxide.Plugins
         const string szRewardPoints = "ServerRewardPoints";
 
         bool Changed;
+        List<string> blacklistedNPCMonuments = new List<string>();
+        List<string> blacklistedMonuments = new List<string>();
         List<TreasureItem> chestLoot = new List<TreasureItem>();
         bool showPrefix;
         static bool useRocketOpener;
@@ -2531,6 +2561,29 @@ namespace Oxide.Plugins
                     new TreasureItem { shortname = "smg.thomspon", amount = 1, skin = 0 },
                     new TreasureItem { shortname = "supply.signal", amount = 1, skin = 0 },
                     new TreasureItem { shortname = "targeting.computer", amount = 1, skin = 0 },
+                };
+            }
+        }
+
+        List<object> DefaultBlacklist
+        {
+            get
+            {
+                return new List<object>
+                {
+                    "Outpost"
+                };
+            }
+        }
+
+        List<object> DefaultNPCBlacklist
+        {
+            get
+            {
+                return new List<object>
+                {
+                    "Bandit Camp",
+                    "Outpost"
                 };
             }
         }
@@ -2850,7 +2903,8 @@ namespace Oxide.Plugins
             onlyMonuments = Convert.ToBoolean(GetConfig("Monuments", "Auto Spawn At Monuments Only", false));
             allowMonumentChance = Convert.ToSingle(GetConfig("Monuments", "Chance To Spawn At Monuments Instead", 0f));
             undergroundLoot = Convert.ToBoolean(GetConfig("Monuments", "Allow Treasure Loot Underground", false));
-
+            blacklistedMonuments = (GetConfig("Monuments", "Blacklisted", DefaultBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
+            
             if (allowMonumentChance < 0f)
                 allowMonumentChance = 0f;
 
@@ -2996,6 +3050,7 @@ namespace Oxide.Plugins
             spawnsDespawnInventory = Convert.ToBoolean(GetConfig("NPCs", "Despawn Inventory On Death", true));
             spawnNpcsRandomNames = Convert.ToBoolean(GetConfig("NPCs", "Generate Random Names", true));
             spawnNpcsRandomAmount = Convert.ToBoolean(GetConfig("NPCs", "Spawn Random Amount", false));
+            blacklistedNPCMonuments = (GetConfig("NPCs", "Blacklisted", DefaultNPCBlacklist) as List<object>).Where(o => o != null && o.ToString().Length > 0).Cast<string>().ToList();
 
             showXZ = Convert.ToBoolean(GetConfig("Settings", "Show X Z Coordinates", false));
 
