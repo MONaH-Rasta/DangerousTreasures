@@ -13,14 +13,14 @@ using System.Reflection;
 /* 
     TODO: Option for multiple custom spawn locations with names: dtevent custom "name"
 
-    Fixed Unlooted Announcements
-    Fixed event started message
-    Added language message "pStartedNpcs" -> "The event has started at X! The protective fire aura has been obliterated! Npcs must be killed before the treasure will become lootable."
+    Fix for started spam
+    Fix for announcement after looted
+    Fix for item amount being set to 1
 */
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "1.3.6")]
+    [Info("Dangerous Treasures", "nivex", "1.3.7")]
     [Description("Event with treasure chests.")]
     class DangerousTreasures : RustPlugin
     {
@@ -865,6 +865,7 @@ namespace Oxide.Plugins
 
                 unlock?.Destroy();
                 destruct?.Destroy();
+                announcement?.Destroy();
 
                 if (container != null && !container.IsDestroyed)
                 {
@@ -901,22 +902,25 @@ namespace Oxide.Plugins
                     unlock.Destroy();
                 }
 
-                DestroyFire();
-                DestroySphere();
-                DestroyLauncher();
-
-                if (destructTime > 0f && destruct == null)
-                    destruct = ins.timer.Once(destructTime, () => Destruct());
-
-                if (showStarted)
-                    ins.PrintToChat(ins.msg(requireAllNpcsDie ? "pStartedNpcs" : szEventStarted, null, FormatGridReference(containerPos)));
-
-                started = true;
-
-                if (useUnclaimedAnnouncements)
+                if (!started)
                 {
-                    claimTime = Time.realtimeSinceStartup + destructTime;
-                    announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
+                    DestroyFire();
+                    DestroySphere();
+                    DestroyLauncher();
+
+                    if (destructTime > 0f && destruct == null)
+                        destruct = ins.timer.Once(destructTime, () => Destruct());
+
+                    if (showStarted)
+                        ins.PrintToChat(ins.msg(requireAllNpcsDie ? "pStartedNpcs" : szEventStarted, null, FormatGridReference(containerPos)));
+
+                    if (useUnclaimedAnnouncements)
+                    {
+                        claimTime = Time.realtimeSinceStartup + destructTime;
+                        announcement = ins.timer.Repeat(unclaimedInterval * 60f, 0, () => Unclaimed());
+                    }
+
+                    started = true;
                 }
 
                 if (requireAllNpcsDie)
@@ -2161,7 +2165,7 @@ namespace Oxide.Plugins
                     if (itemDef == null)
                         continue;
 
-                    if (itemDef.stackable > 1 || (itemDef.condition.enabled && itemDef.condition.max > 0f))
+                    if (itemDef.stackable == 1 || (itemDef.condition.enabled && itemDef.condition.max > 0f))
                         amount = 1;
 
                     ulong skin = Convert.ToUInt64(chestLoot[index].skin);
