@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.7")]
+    [Info("Dangerous Treasures", "nivex", "2.3.8")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -932,7 +932,7 @@ namespace Oxide.Plugins
 
             private bool ShouldForgetTarget(BasePlayer target)
             {
-                return target.IsNull() || target.health <= 0f || target.limitNetworking || target.IsDead() || target.skinID == 14922524 || !IsInTargetRange(target.transform.position);
+                return target.IsKilled() || target.health <= 0f || target.limitNetworking || target.IsDead() || target.skinID == 14922524 || !IsInTargetRange(target.transform.position);
             }
         }
 
@@ -1061,6 +1061,7 @@ namespace Oxide.Plugins
         {
             internal DangerousTreasures Instance;
             internal ulong userid;
+            internal GameObject go;
             internal StorageContainer container;
             internal Vector3 containerPos;
             internal Vector3 lastFirePos;
@@ -1232,8 +1233,10 @@ namespace Oxide.Plugins
 
             public void Kill(bool isUnloading)
             {
+                Instance.treasureChests.Remove(uid);
                 IsUnloading = isUnloading;
                 if (killed) return;
+                killed = true;
 
                 if (!container.IsKilled())
                 {
@@ -1248,8 +1251,9 @@ namespace Oxide.Plugins
                 DestroyLauncher();
                 DestroySphere();
                 DestroyFire();
-                killed = true;
                 Interface.CallHook("OnDangerousEventEnded", containerPos);
+                Destroy(go);
+                Destroy(this);
             }
 
             public bool HasRustMarker
@@ -2153,11 +2157,16 @@ namespace Oxide.Plugins
                 vendingMarker.SafelyKill();
             }
 
-            void OnDestroy()
+            private void OnDestroy()
+            {
+                DestroyMe();
+            }
+
+            public void DestroyMe()
             {
                 Kill(IsUnloading);
 
-                if (Instance != null && !IsUnloading && Instance.treasureChests.Remove(uid) && Instance.treasureChests.Count == 0)
+                if (Instance != null && !IsUnloading && Instance.treasureChests.Count == 0)
                 {
                     Instance.SubscribeHooks(false);
                 }
@@ -2659,6 +2668,34 @@ namespace Oxide.Plugins
             }
         }
 
+        void OnEntitySpawned(DroppedItemContainer backpack)
+        {
+            if (config.Event.PlayersLootable && !backpack.IsKilled() && backpack.ShortPrefabName == "item_drop_backpack" && EventTerritory(backpack.transform.position))
+            {
+                NextTick(() =>
+                {
+                    if (!backpack.IsKilled() && backpack.playerSteamID.IsSteamId())
+                    {
+                        backpack.playerSteamID = 0;
+                    }
+                });
+            }
+        }
+
+        void OnEntitySpawned(PlayerCorpse corpse)
+        {
+            if (config.Event.PlayersLootable && !corpse.IsKilled() && EventTerritory(corpse.transform.position))
+            {
+                NextTick(() =>
+                {
+                    if (!corpse.IsKilled() && corpse.playerSteamID.IsSteamId())
+                    {
+                        corpse.playerSteamID = 0;
+                    }
+                });
+            }
+        }
+
         object CanBuild(Planner planner, Construction prefab, Construction.Target target)
         {
             var player = planner?.GetOwnerPlayer();
@@ -2713,11 +2750,6 @@ namespace Oxide.Plugins
             }
             else looters[container.net.ID] = player.UserIDString;
 
-            if (!config.EventMessages.FirstOpened)
-            {
-                return null;
-            }
-
             var chest = treasureChests[container.net.ID];
 
             if (chest.userid.IsSteamId() && !IsAlly(chest.userid, player.userID))
@@ -2726,7 +2758,7 @@ namespace Oxide.Plugins
                 return true;
             }
 
-            if (chest.opened)
+            if (chest.opened || !config.EventMessages.FirstOpened)
             {
                 return null;
             }
@@ -3856,6 +3888,7 @@ namespace Oxide.Plugins
             container.Spawn();
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
+            chest.go = chest.gameObject;
             chest.Instance = this;
             chest.Radius = config.Event.Radius;
 
@@ -4025,6 +4058,7 @@ namespace Oxide.Plugins
             container.SetFlag(BaseEntity.Flags.OnFire, true);
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
+            chest.go = chest.gameObject;
             chest.Instance = this;
             float unlockTime = UnityEngine.Random.Range(config.Unlock.MinTime, config.Unlock.MaxTime);
 
@@ -4059,16 +4093,14 @@ namespace Oxide.Plugins
         {
             var eventInterval = UnityEngine.Random.Range(config.Event.IntervalMin, config.Event.IntervalMax);
             float stamp = Facepunch.Math.Epoch.Current;
+            float time = 1f;
 
             if (data.SecondsUntilEvent == double.MinValue) // first time users
             {
                 data.SecondsUntilEvent = stamp + eventInterval;
                 Puts(_("Next Automated Event", null, FormatTime(eventInterval), DateTime.Now.AddSeconds(eventInterval).ToString()));
-                //Puts(_("View Config"));
                 SaveData();
             }
-
-            float time = 1f;
 
             if (config.Event.Automated && data.SecondsUntilEvent - stamp <= 0 && treasureChests.Count < config.Event.Max && BasePlayer.activePlayerList.Count >= config.Event.PlayerLimit)
             {
@@ -4633,7 +4665,6 @@ namespace Oxide.Plugins
                 {"Invalid Constant", "Invalid constant {0} - please notify the author!"},
                 {"Destroyed Treasure Chest", "Destroyed a left over treasure chest at {0}"},
                 {"Indestructible", "<color=#FF0000>Treasure chests are indestructible!</color>"},
-                {"View Config", "Please view the config if you haven't already."},
                 {"Newman Enter", "<color=#FF0000>To walk with clothes is to set one-self on fire. Tread lightly.</color>"},
                 {"Newman Traitor Burn", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands or PERISH!</color>"},
                 {"Newman Traitor", "<color=#FF0000>Tempted by the riches you have defiled these grounds. Vanish from these lands!</color>"},
@@ -4931,6 +4962,9 @@ namespace Oxide.Plugins
 
         public class EventSettings
         {
+            [JsonProperty(PropertyName = "Allow Player Bags To Be Lootable At Events")]
+            public bool PlayersLootable;
+
             [JsonProperty(PropertyName = "Automated")]
             public bool Automated { get; set; } = false;
 
@@ -5166,32 +5200,31 @@ namespace Oxide.Plugins
             public bool Harm { get; set; } = false;
         }
 
-
         public class NpcKitSettings
         {
             [JsonProperty(PropertyName = "Helm", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Helm { get; set; } = new() { "metal.facemask" };
+            public List<string> Helm = new();
 
             [JsonProperty(PropertyName = "Torso", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Torso { get; set; } = new() { "metal.plate.torso" };
+            public List<string> Torso = new();
 
             [JsonProperty(PropertyName = "Pants", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Pants { get; set; } = new() { "pants" };
+            public List<string> Pants = new();
 
             [JsonProperty(PropertyName = "Gloves", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Gloves { get; set; } = new() { "tactical.gloves" };
+            public List<string> Gloves = new();
 
             [JsonProperty(PropertyName = "Boots", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Boots { get; set; } = new() { "boots.frog" };
+            public List<string> Boots = new();
 
             [JsonProperty(PropertyName = "Shirt", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Shirt { get; set; } = new() { "tshirt" };
+            public List<string> Shirt = new();
 
             [JsonProperty(PropertyName = "Kilts", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Kilts { get; set; } = new();
+            public List<string> Kilts = new();
 
             [JsonProperty(PropertyName = "Weapon", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public List<string> Weapon { get; set; } = new() { "machete" };
+            public List<string> Weapon = new();
         }
 
         public class NpcLootSettings
@@ -5361,7 +5394,16 @@ namespace Oxide.Plugins
             public List<string> RandomNames { get; set; } = new();
 
             [JsonProperty(PropertyName = "Items)")]
-            public NpcKitSettings Items { get; set; } = new();
+            public NpcKitSettings Items { get; set; } = new()
+            {
+                Helm = { "metal.facemask" },
+                Torso = { "metal.plate.torso" },
+                Pants = { "pants" },
+                Gloves = { "tactical.gloves" },
+                Boots = { "boots.frog" },
+                Shirt = { "tshirt" },
+                Weapon = { "machete" }
+            };
 
             [JsonProperty(PropertyName = "Kits", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> Kits { get; set; } = new() { "murderer_kit_1", "murderer_kit_2" };
@@ -5397,7 +5439,11 @@ namespace Oxide.Plugins
             public List<string> RandomNames { get; set; } = new();
 
             [JsonProperty(PropertyName = "Items")]
-            public NpcKitSettings Items { get; set; } = new();
+            public NpcKitSettings Items { get; set; } = new()
+            {
+                Torso = { "hazmatsuit_scientist_peacekeeper" },
+                Weapon = { "rifle.ak" }
+            };
 
             [JsonProperty(PropertyName = "Kits", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> Kits { get; set; } = new() { "scientist_kit_1", "scientist_kit_2" };
