@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.8")]
+    [Info("Dangerous Treasures", "nivex", "2.3.9")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -999,6 +999,8 @@ namespace Oxide.Plugins
 
                         list.Add(player); // acquire a player target 
                     }
+
+                    Pool.FreeList(ref players);
 
                     if (list.Count > 0)
                     {
@@ -2069,6 +2071,8 @@ namespace Oxide.Plugins
 
                     if (!vendingMarker.IsKilled())
                     {
+                        vendingMarker.transform.position = containerPos;
+                        vendingMarker.markerShopName = config.Event.MarkerName;
                         vendingMarker.SendNetworkUpdate();
                     }
 
@@ -2133,7 +2137,7 @@ namespace Oxide.Plugins
 
             private void SafelyKill(ScientistNPC npc)
             {
-                if (!npc.IsRealNull() && Instance != null && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
+                if (!npc.IsRealNull() && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
                 {
                     brain.DisableShouldThink();
                 }
@@ -2166,7 +2170,7 @@ namespace Oxide.Plugins
             {
                 Kill(IsUnloading);
 
-                if (Instance != null && !IsUnloading && Instance.treasureChests.Count == 0)
+                if (!IsUnloading && Instance.treasureChests.Count == 0)
                 {
                     Instance.SubscribeHooks(false);
                 }
@@ -2366,7 +2370,7 @@ namespace Oxide.Plugins
 
                 unlock = Instance.timer.Once(time, Unlock);
 
-                if (config.Countdown.Enabled && config.Countdown.Times?.Count > 0 && countdownTime > 0)
+                if (config.Countdown.Enabled && !config.Countdown.Times.IsNullOrEmpty() && countdownTime > 0)
                 {
                     if (times.Count == 0)
                         times.AddRange(config.Countdown.Times);
@@ -2381,14 +2385,12 @@ namespace Oxide.Plugins
                             return;
                         }
 
-                        if (times.Contains(countdownTime))
+                        if (times.Remove(countdownTime))
                         {
                             string eventPos = FormatGridReference(containerPos);
 
                             foreach (var target in BasePlayer.activePlayerList)
                                 Message(target, "Countdown", eventPos, Instance.FormatTime(countdownTime, target.UserIDString));
-
-                            times.Remove(countdownTime);
                         }
                     });
                 }
@@ -3336,16 +3338,9 @@ namespace Oxide.Plugins
 
         private static List<T> FindEntitiesOfType<T>(Vector3 a, float n, int m = -1) where T : BaseEntity
         {
-            int hits = Physics.OverlapSphereNonAlloc(a, n, Vis.colBuffer, m, QueryTriggerInteraction.Collide);
-            List<T> entities = new();
-            for (int i = 0; i < hits; i++)
-            {
-                if (Vis.colBuffer[i] is Collider col && col.ToBaseEntity() is T entity && !entity.IsDestroyed && !entities.Contains(entity))
-                {
-                    entities.Add(entity);
-                }
-                Vis.colBuffer[i] = null;
-            }
+            List<T> entities = Pool.GetList<T>();
+            Vis.Entities(a, n, entities, m, QueryTriggerInteraction.Collide);
+            entities.RemoveAll(x => !x || x.IsDestroyed);
             return entities;
         }
 
@@ -3690,6 +3685,7 @@ namespace Oxide.Plugins
             var entities = FindEntitiesOfType<BaseEntity>(position, radius, mask);
             entities.RemoveAll(entity => entity.IsNpc || !entity.OwnerID.IsSteamId());
             bool blocked = entities.Count > 0;
+            Pool.FreeList(ref entities);
             return blocked;
         }
 
@@ -3958,19 +3954,22 @@ namespace Oxide.Plugins
 
             bool canSpawnNpcs = true;
 
-            foreach (var x in monuments)
+            if (sd_customPos == Vector3.zero)
             {
-                if (x.IsInBounds(position))
+                foreach (var x in monuments)
                 {
-                    foreach (var value in config.NPC.BlacklistedMonuments)
+                    if (x.IsInBounds(position))
                     {
-                        if (!value.Value && x.name.Trim() == value.Key.Trim())
+                        foreach (var (monument, value) in config.NPC.BlacklistedMonuments)
                         {
-                            canSpawnNpcs = false;
-                            break;
+                            if (value && x.name.Trim() == monument.Trim())
+                            {
+                                canSpawnNpcs = false;
+                                break;
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             }
 
@@ -4058,6 +4057,7 @@ namespace Oxide.Plugins
             container.SetFlag(BaseEntity.Flags.OnFire, true);
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
+            chest.markerCreated = true;
             chest.go = chest.gameObject;
             chest.Instance = this;
             float unlockTime = UnityEngine.Random.Range(config.Unlock.MinTime, config.Unlock.MaxTime);
@@ -5777,7 +5777,8 @@ namespace Oxide.Plugins
             }
             catch (Exception ex)
             {
-                Debug.LogException(ex);
+                canSaveConfig = false;
+                Puts(ex.ToString());
                 LoadDefaultConfig();
             }
         }
@@ -5855,7 +5856,15 @@ namespace Oxide.Plugins
             }
         }
 
-        protected override void SaveConfig() => Config.WriteObject(config);
+        private bool canSaveConfig = true;
+
+        protected override void SaveConfig()
+        {
+            if (canSaveConfig)
+            {
+                Config.WriteObject(config);
+            }
+        }
 
         protected override void LoadDefaultConfig() => config = new();
 
