@@ -5,19 +5,19 @@ using Oxide.Core.Libraries.Covalence;
 using Oxide.Core.Plugins;
 using Oxide.Plugins.DangerousTreasuresExtensionMethods;
 using Rust;
-using Rust.Ai;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.3.9")]
+    [Info("Dangerous Treasures", "nivex", "2.4.0")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -123,7 +123,7 @@ namespace Oxide.Plugins
             internal float attackCooldown;
             internal AttackType attackType = AttackType.None;
             internal BaseNavigator.NavigationSpeed CurrentSpeed = BaseNavigator.NavigationSpeed.Normal;
-            
+
             internal Vector3 AttackPosition => AttackTransform == null ? default : AttackTransform.position;
 
             internal Vector3 ServerPosition => NpcTransform == null ? default : NpcTransform.position;
@@ -960,7 +960,7 @@ namespace Oxide.Plugins
                 projectile.InitializeVelocity(Vector3.up);
 
                 missile.explosionRadius = 0f;
-                
+
                 missile.damageTypes = new(); // no damage
             }
 
@@ -1000,7 +1000,7 @@ namespace Oxide.Plugins
                         list.Add(player); // acquire a player target 
                     }
 
-                    Pool.FreeList(ref players);
+                    players.ResetToPool();
 
                     if (list.Count > 0)
                     {
@@ -1086,23 +1086,23 @@ namespace Oxide.Plugins
 
             private Dictionary<string, List<string>> npcKits = Pool.Get<Dictionary<string, List<string>>>();
             private Dictionary<ulong, float> fireticks = Pool.Get<Dictionary<ulong, float>>();
-            private List<FireBall> fireballs = Pool.GetList<FireBall>();
-            private List<ulong> newmans = Pool.GetList<ulong>();
-            private List<ulong> traitors = Pool.GetList<ulong>();
-            private List<ulong> protects = Pool.GetList<ulong>();
-            private List<ulong> players = Pool.GetList<ulong>();
-            private List<TimedExplosive> missiles = Pool.GetList<TimedExplosive>();
-            private List<int> times = Pool.GetList<int>();
-            private List<SphereEntity> spheres = Pool.GetList<SphereEntity>();
-            private List<Vector3> missilePositions = Pool.GetList<Vector3>();
-            private List<Vector3> firePositions = Pool.GetList<Vector3>();
-            public List<ScientistNPC> npcs = Pool.GetList<ScientistNPC>();
+            private List<FireBall> fireballs = Pool.Get<List<FireBall>>();
+            private List<ulong> newmans = Pool.Get<List<ulong>>();
+            private List<ulong> traitors = Pool.Get<List<ulong>>();
+            private List<ulong> protects = Pool.Get<List<ulong>>();
+            private List<ulong> players = Pool.Get<List<ulong>>();
+            private List<TimedExplosive> missiles = Pool.Get<List<TimedExplosive>>();
+            private List<int> times = Pool.Get<List<int>>();
+            private List<SphereEntity> spheres = Pool.Get<List<SphereEntity>>();
+            private List<Vector3> missilePositions = Pool.Get<List<Vector3>>();
+            private List<Vector3> firePositions = Pool.Get<List<Vector3>>();
+            public List<ScientistNPC> npcs = Pool.Get<List<ScientistNPC>>();
             private Timer destruct, unlock, countdown, announcement;
             private MapMarkerExplosion explosionMarker;
             private MapMarkerGenericRadius genericMarker;
             private VendingMachineMapMarker vendingMarker;
 
-            private string FormatGridReference(Vector3 position) => Instance.FormatGridReference(position);
+            private string FormatGridReference(Vector3 position) => Instance.FormatGridReference(position, config.Settings.ShowGrid);
 
             private void Message(BasePlayer player, string key, params object[] args) => Instance.Message(player, key, args);
 
@@ -1893,7 +1893,7 @@ namespace Oxide.Plugins
                 {
                     npc.LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
                 }
-                
+
                 var alternate = isMurderer ? config.NPC.Murderers.Alternate : config.NPC.Scientists.Alternate;
 
                 if (!alternate.None)
@@ -2035,7 +2035,7 @@ namespace Oxide.Plugins
                 }
                 brain.IdentifyWeapon();
             }
-            
+
             void SetupNpcKits()
             {
                 npcKits = new()
@@ -2079,7 +2079,7 @@ namespace Oxide.Plugins
                     return;
                 }
 
-                if (Instance.MarkerManager.CanCall())
+                if (config.Event.MarkerManager && Instance.MarkerManager.CanCall())
                 {
                     Interface.CallHook("API_CreateMarker", container as BaseEntity, "DangerousTreasures", 0, 10f, 0.25f, config.Event.MarkerName, "FF0000", "00FFFFFF");
                     markerCreated = true;
@@ -2314,8 +2314,15 @@ namespace Oxide.Plugins
 
                 if (!started)
                 {
+                    started = true;
+
+                    if (config.Event.DestroySphereOnStart)
+                    {
+                        DestroySphere();
+                    }
+
                     DestroyFire();
-                    DestroySphere();
+
                     DestroyLauncher();
 
                     if (config.Event.DestructTime > 0f && destruct == null)
@@ -2323,11 +2330,12 @@ namespace Oxide.Plugins
 
                     if (config.EventMessages.Started)
                     {
+                        var posStr = FormatGridReference(containerPos);
                         foreach (var target in BasePlayer.activePlayerList)
                         {
-                            Message(target, requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", FormatGridReference(containerPos));
+                            Message(target, requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", posStr);
                         }
-                        Puts(Instance._(requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", null, FormatGridReference(containerPos)));
+                        Puts(Instance._(requireAllNpcsDie && npcSpawnedAmount > 0 ? "StartedNpcs" : "Started", null, Instance.FormatGridReference(containerPos, true)));
                     }
 
                     if (config.UnlootedAnnouncements.Enabled)
@@ -2335,8 +2343,6 @@ namespace Oxide.Plugins
                         claimTime = Time.realtimeSinceStartup + config.Event.DestructTime;
                         announcement = Instance.timer.Repeat(config.UnlootedAnnouncements.Interval * 60f, 0, Unclaimed);
                     }
-
-                    started = true;
                 }
 
                 if (requireAllNpcsDie && npcSpawnedAmount > 0 && npcs != null)
@@ -2613,7 +2619,7 @@ namespace Oxide.Plugins
             {
                 brain.tc.Unlock();
             }
-            
+
             if (config.Unlock.LockToPlayerOnNpcDeath)
             {
                 brain.tc.TrySetOwner(hitInfo);
@@ -2766,7 +2772,7 @@ namespace Oxide.Plugins
             }
 
             chest.opened = true;
-            var posStr = FormatGridReference(container.transform.position);
+            var posStr = FormatGridReference(container.transform.position, config.Settings.ShowGrid);
 
             foreach (var target in BasePlayer.activePlayerList)
             {
@@ -2804,22 +2810,24 @@ namespace Oxide.Plugins
                     {
                         if (config.RankedLadder.Enabled)
                         {
-                            if (!data.Players.ContainsKey(looter.UserIDString))
-                                data.Players.Add(looter.UserIDString, new());
+                            if (!data.Players.TryGetValue(looter.UserIDString, out var pi))
+                                data.Players.Add(looter.UserIDString, pi = new());
 
-                            data.Players[looter.UserIDString].StolenChestsTotal++;
-                            data.Players[looter.UserIDString].StolenChestsSeed++;
+                            pi.StolenChestsTotal++;
+                            pi.StolenChestsSeed++;
                             SaveData();
                         }
 
-                        var posStr = FormatGridReference(looter.transform.position);
-
-                        Puts(_("Thief", null, posStr, looter.displayName));
+                        Puts(_("Thief", null, FormatGridReference(looter.transform.position, true), looter.displayName));
 
                         if (config.EventMessages.Thief)
                         {
+                            var posStr = FormatGridReference(looter.transform.position, config.Settings.ShowGrid);
+
                             foreach (var target in BasePlayer.activePlayerList)
+                            {
                                 Message(target, "Thief", posStr, looter.displayName);
+                            }
                         }
 
                         looter.EndLooting();
@@ -3037,21 +3045,9 @@ namespace Oxide.Plugins
             }
         }
 
-        private bool IsEmptyMap()
-        {
-            foreach (var b in BuildingManager.server.buildingDictionary)
-            {
-                if (b.Value.HasDecayEntities() && b.Value.decayEntities.Exists(de => de != null && de.OwnerID.IsSteamId()))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
         void TryWipeData()
         {
-            if (wipeChestsSeed || IsEmptyMap())
+            if (wipeChestsSeed)
             {
                 if (data.Players.Count > 0)
                 {
@@ -3338,7 +3334,7 @@ namespace Oxide.Plugins
 
         private static List<T> FindEntitiesOfType<T>(Vector3 a, float n, int m = -1) where T : BaseEntity
         {
-            List<T> entities = Pool.GetList<T>();
+            List<T> entities = Pool.Get<List<T>>();
             Vis.Entities(a, n, entities, m, QueryTriggerInteraction.Collide);
             entities.RemoveAll(x => !x || x.IsDestroyed);
             return entities;
@@ -3685,7 +3681,7 @@ namespace Oxide.Plugins
             var entities = FindEntitiesOfType<BaseEntity>(position, radius, mask);
             entities.RemoveAll(entity => entity.IsNpc || !entity.OwnerID.IsSteamId());
             bool blocked = entities.Count > 0;
-            Pool.FreeList(ref entities);
+            entities.ResetToPool();
             return blocked;
         }
 
@@ -3774,7 +3770,7 @@ namespace Oxide.Plugins
                 return Vector3.zero;
             }
 
-            var entities = Pool.GetList<BaseEntity>();
+            var entities = Pool.Get<List<BaseEntity>>();
 
             foreach (var e in BaseNetworkable.serverEntities.OfType<BaseEntity>())
             {
@@ -3801,18 +3797,18 @@ namespace Oxide.Plugins
             {
                 position = GetRandomMonumentDropPosition(position);
 
-                Pool.FreeList(ref entities);
+                entities.ResetToPool();
 
                 return position == Vector3.zero ? GetMonumentDropPosition(++retry) : position;
             }
 
             var entity = entities.GetRandom();
-            
+
             position = entity.transform.position;
 
             entity.Invoke(entity.SafelyKill, 0.1f);
 
-            Pool.FreeList(ref entities);
+            entities.ResetToPool();
 
             return position;
         }
@@ -3913,8 +3909,8 @@ namespace Oxide.Plugins
             SubscribeHooks(true);
             treasureChests.Add(uid, chest);
 
-            var posStr = FormatGridReference(container.transform.position);
-            Puts("{0}: {1}", posStr, string.Join(", ", container.inventory.itemList.Select(item => string.Format("{0} ({1})", item.info.displayName.translated, item.amount))));
+            var posStr = FormatGridReference(container.transform.position, config.Settings.ShowGrid);
+            Puts("{0}: {1}", FormatGridReference(container.transform.position, true), string.Join(", ", container.inventory.itemList.Select(item => string.Format("{0} ({1})", item.info.displayName.translated, item.amount))));
 
             //if (!_config.Event.SpawnMax && treasureChests.Count > 1)
             //{
@@ -3973,7 +3969,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            if (!AiManager.nav_disable && canSpawnNpcs) chest.Invoke(chest.SpawnNpcs, 1f);
+            if (!Rust.Ai.AiManager.nav_disable && canSpawnNpcs) chest.Invoke(chest.SpawnNpcs, 1f);
             chest.Invoke(() => chest.SetUnlockTime(unlockTime), 2f);
 
             return chest;
@@ -3992,11 +3988,11 @@ namespace Oxide.Plugins
 
                 if (config.GUIAnnouncement.Enabled && GUIAnnouncements.CanCall())
                 {
-                    foreach (var chest in treasureChests)
+                    foreach (var chest in treasureChests.Values)
                     {
-                        double distance = Math.Round(target.transform.position.Distance(chest.Value.containerPos), 2);
-                        string unlockStr = FormatTime(chest.Value.countdownTime, target.UserIDString);
-                        var posStr = FormatGridReference(chest.Value.containerPos);
+                        double distance = Math.Round(target.transform.position.Distance(chest.containerPos), 2);
+                        string unlockStr = FormatTime(chest.countdownTime, target.UserIDString);
+                        var posStr = FormatGridReference(chest.containerPos, config.Settings.ShowGrid);
                         string text = msg2("Opened", target.UserIDString, posStr, unlockStr, distance, config.Settings.DistanceChatCommand);
 
                         if (distance <= config.GUIAnnouncement.Distance)
@@ -4006,7 +4002,7 @@ namespace Oxide.Plugins
 
                         if (config.Event.DrawTreasureIfNearby && config.Event.AutoDrawDistance > 0f && distance <= config.Event.AutoDrawDistance)
                         {
-                            DrawText(target, chest.Value.containerPos, msg2("Treasure Chest", target.UserIDString, distance));
+                            DrawText(target, chest.containerPos, msg2("Treasure Chest", target.UserIDString, distance));
                         }
                     }
                 }
@@ -4129,7 +4125,7 @@ namespace Oxide.Plugins
             timer.Once(time, CheckSecondsUntilEvent);
         }
 
-        public string FormatGridReference(Vector3 position)
+        public string FormatGridReference(Vector3 position, bool showGrid)
         {
             string monumentName = null;
             float distance = 10000f;
@@ -4147,14 +4143,18 @@ namespace Oxide.Plugins
 
             if (config.Settings.ShowXZ)
             {
-                string pos = string.Format("{0} {1}", position.x.ToString("N2"), position.z.ToString("N2"));
-                return string.IsNullOrEmpty(monumentName) ? pos : $"{monumentName} ({pos})";
+                return string.IsNullOrEmpty(monumentName) ? $"{position.x:N2} {position.z:N2}" : $"{monumentName} ({position.x:N2} {position.z:N2})";
             }
 
-            return string.IsNullOrEmpty(monumentName) ? PhoneController.PositionToGridCoord(position) : $"{monumentName} ({PhoneController.PositionToGridCoord(position)})";
+            if (showGrid)
+            {
+                return string.IsNullOrEmpty(monumentName) ? PhoneController.PositionToGridCoord(position) : $"{monumentName} ({PhoneController.PositionToGridCoord(position)})";
+            }
+
+            return string.IsNullOrEmpty(monumentName) ? string.Empty : monumentName;
         }
 
-        string FormatTime(double seconds, string id = null)
+        private string FormatTime(double seconds, string id = null)
         {
             if (seconds == 0)
             {
@@ -4350,19 +4350,26 @@ namespace Oxide.Plugins
                             data.Players[player.UserIDString].StolenChestsSeed = 0;
 
                     int rank = 0;
+                    var sb = new StringBuilder();
                     var ladder = data.Players.ToDictionary(k => k.Key, v => args[0].ToLower() == "ladder" ? v.Value.StolenChestsSeed : v.Value.StolenChestsTotal).Where(kvp => kvp.Value > 0).ToList();
                     ladder.Sort((x, y) => y.Value.CompareTo(x.Value));
 
-                    Message(player, args[0].ToLower() == "ladder" ? "Ladder" : "Ladder Total");
+                    var ranked = msg(args[0].ToLower() == "ladder" ? "Ladder" : "Ladder Total", player.UserIDString);
+
+                    if (!string.IsNullOrEmpty(ranked))
+                    {
+                        sb.AppendLine(ranked);
+                    }
 
                     foreach (var kvp in ladder.Take(10))
                     {
                         string name = covalence.Players.FindPlayerById(kvp.Key)?.Name ?? kvp.Key;
                         string value = kvp.Value.ToString("N0");
 
-                        Message(player, "TreasureHunter", ++rank, name, value);
+                        sb.AppendLine(msg("TreasureHunter", player.UserIDString, ++rank, name, value));
                     }
 
+                    Message(player, sb.ToString());
                     return;
                 }
 
@@ -4461,20 +4468,20 @@ namespace Oxide.Plugins
                 return;
             }
 
-            foreach (var chest in treasureChests)
+            foreach (var chest in treasureChests.Values)
             {
-                double distance = Math.Round(player.transform.position.Distance(chest.Value.containerPos), 2);
-                string posStr = FormatGridReference(chest.Value.containerPos);
+                double distance = Math.Round(player.transform.position.Distance(chest.containerPos), 2);
+                string posStr = FormatGridReference(chest.containerPos, config.Settings.ShowGrid);
 
-                if (chest.Value.GetUnlockTime() != null)
+                if (chest.GetUnlockTime() != null)
                 {
-                    Message(player, "Info", chest.Value.GetUnlockTime(player.UserIDString), posStr, distance, config.Settings.DistanceChatCommand);
+                    Message(player, "Info", chest.GetUnlockTime(player.UserIDString), posStr, distance, config.Settings.DistanceChatCommand);
                 }
                 else Message(player, "Already", posStr, distance, config.Settings.DistanceChatCommand);
 
                 if (config.Settings.AllowDrawText)
                 {
-                    DrawText(player, chest.Value.containerPos, msg2("Treasure Chest", player.UserIDString, distance));
+                    DrawText(player, chest.containerPos, msg2("Treasure Chest", player.UserIDString, distance));
                 }
             }
         }
@@ -4779,25 +4786,44 @@ namespace Oxide.Plugins
             return RemoveFormatting(msg(key, id, args));
         }
 
+        private Regex IndexRegex = new Regex(@"\{(\d+)\}", RegexOptions.Compiled);
+
+        public string Format(string format, params object[] args)
+        {
+            return IndexRegex.Replace(format, match =>
+            {
+                if (int.TryParse(match.Groups[1].Value, out int index) && index < args.Length)
+                {
+                    return args[index] != null ? args[index].ToString() : string.Empty;
+                }
+
+                return match.Value;
+            });
+        }
+
         private string msg(string key, string id = null, params object[] args)
         {
             string message = config.EventMessages.Prefix && id != null && id != "server_console" ? lang.GetMessage("MessagePrefix", this, null) + lang.GetMessage(key, this, id) : lang.GetMessage(key, this, id);
 
-            return message.Contains("{0}") ? string.Format(message, args) : message;
+            return args.Length > 0 ? Format(message, args) : message;
         }
 
         private string msg2(string key, string id, params object[] args)
         {
             string message = lang.GetMessage(key, this, id);
 
-            return message.Contains("{0}") ? string.Format(message, args) : message;
+            return args.Length > 0 ? Format(message, args) : message;
         }
 
         private string RemoveFormatting(string source) => source.Contains(">") ? System.Text.RegularExpressions.Regex.Replace(source, "<.*?>", string.Empty) : source;
 
         private void Message(BasePlayer player, string key, params object[] args)
         {
-            if (player == null) return;
+            if (player == null)
+            {
+                return;
+            }
+
             string message = msg(key, player.UserIDString, args);
 
             if (string.IsNullOrEmpty(message))
@@ -4949,6 +4975,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Show X Z Coordinates")]
             public bool ShowXZ { get; set; } = false;
+
+            [JsonProperty(PropertyName = "Show Grid Coordinates")]
+            public bool ShowGrid { get; set; } = true;
         }
 
         public class CountdownSettings
@@ -4976,6 +5005,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Use Vending Map Marker")]
             public bool MarkerVending { get; set; } = true;
+
+            [JsonProperty(PropertyName = "Use Marker Manager Plugin")]
+            public bool MarkerManager { get; set; }
 
             [JsonProperty(PropertyName = "Use Explosion Map Marker")]
             public bool MarkerExplosion { get; set; } = false;
@@ -5009,6 +5041,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Amount Of Spheres")]
             public int SphereAmount { get; set; } = 5;
+
+            [JsonProperty(PropertyName = "Destroy Spheres When Event Starts")]
+            public bool DestroySphereOnStart { get; set; } = true;
 
             [JsonProperty(PropertyName = "Player Limit For Event")]
             public int PlayerLimit { get; set; } = 1;
@@ -5900,7 +5935,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static bool CanCall(this Plugin o) { return (object)o != null && o.IsLoaded; }
         public static bool IsHuman(this BasePlayer a) { return !(a.IsNpc || !a.userID.IsSteamId()); }
         public static float Distance(this Vector3 a, Vector3 b) => (a - b).magnitude;
-        public static void ResetToPool<K, V>(this Dictionary<K, V> collection) { collection.Clear(); Pool.Free(ref collection); }
-        public static void ResetToPool<T>(this List<T> collection) { collection.Clear(); Pool.Free(ref collection); }
+        public static void ResetToPool<K, V>(this Dictionary<K, V> obj) { if (obj == null) return; obj.Clear(); Pool.FreeUnmanaged(ref obj); }
+        public static void ResetToPool<T>(this List<T> obj) { if (obj == null) return; obj.Clear(); Pool.FreeUnmanaged(ref obj); }
     }
 }
