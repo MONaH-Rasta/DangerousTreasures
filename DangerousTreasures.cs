@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.0")]
+    [Info("Dangerous Treasures", "nivex", "2.4.1")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -83,6 +83,59 @@ namespace Oxide.Plugins
             public StoredData() { }
         }
 
+        public class HumanoidNPC : ScientistNPC
+        {
+            public new HumanoidBrain Brain;
+
+            public new Translate.Phrase LootPanelTitle => displayName;
+
+            public override string Categorize() => "Humanoid";
+
+            public override bool ShouldDropActiveItem() => false;
+
+            public override string displayName => Brain == null ? "HumanoidNPC" : Brain.displayName;
+
+            public override void AttackerInfo(ProtoBuf.PlayerLifeStory.DeathInfo info)
+            {
+                info.attackerName = displayName;
+                info.attackerSteamID = userID;
+                info.inflictorName = inventory.containerBelt.GetSlot(0).info.shortname;
+                info.attackerDistance = Vector3.Distance(Brain.ServerPosition, Brain.AttackPosition);
+            }
+
+            public override void OnKilled(HitInfo info)
+            {
+                Brain.DisableShouldThink();
+
+                if (Brain.tc == null)
+                {
+                    return;
+                }
+
+                if (Brain.isMurderer && Brain.Instance.config.NPC.Murderers.DespawnInventory || !Brain.isMurderer && Brain.Instance.config.NPC.Scientists.DespawnInventory)
+                {
+                    inventory?.Strip();
+                }
+
+                svActiveItemID = default;
+                SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+
+                Brain.tc.npcs.Remove(this);
+
+                if (Brain.tc.whenNpcsDie && Brain.tc.npcs.Count == 0)
+                {
+                    Brain.tc.Unlock();
+                }
+
+                if (Brain.Instance.config.Unlock.LockToPlayerOnNpcDeath)
+                {
+                    Brain.tc.TrySetOwner(info);
+                }
+
+                base.OnKilled(info);
+            }
+        }
+
         public class HumanoidBrain : ScientistBrain
         {
             public void DisableShouldThink()
@@ -101,7 +154,7 @@ namespace Oxide.Plugins
             internal enum AttackType { BaseProjectile, FlameThrower, Melee, Water, None }
             internal string displayName;
             internal Transform NpcTransform;
-            internal ScientistNPC npc;
+            internal HumanoidNPC npc;
             internal AttackEntity _attackEntity;
             internal FlameThrower flameThrower;
             internal LiquidWeapon liquidWeapon;
@@ -1096,7 +1149,7 @@ namespace Oxide.Plugins
             private List<SphereEntity> spheres = Pool.Get<List<SphereEntity>>();
             private List<Vector3> missilePositions = Pool.Get<List<Vector3>>();
             private List<Vector3> firePositions = Pool.Get<List<Vector3>>();
-            public List<ScientistNPC> npcs = Pool.Get<List<ScientistNPC>>();
+            public List<HumanoidNPC> npcs = Pool.Get<List<HumanoidNPC>>();
             private Timer destruct, unlock, countdown, announcement;
             private MapMarkerExplosion explosionMarker;
             private MapMarkerGenericRadius genericMarker;
@@ -1174,7 +1227,12 @@ namespace Oxide.Plugins
 
                     if (config.NewmanMode.Aura || config.NewmanMode.Harm)
                     {
-                        if (player.inventory.AllItems().Sum(item => player.IsHostileItem(item) ? 1 : 0) == 0)
+                        List<Item> itemList = Pool.Get<List<Item>>();
+                        player.inventory.GetAllItems(itemList);
+                        int sum = itemList.Sum(item => player.IsHostileItem(item) ? 1 : 0);
+                        Pool.FreeUnmanaged(ref itemList);
+
+                        if (sum == 0)
                         {
                             if (config.NewmanMode.Aura && !chest.newmans.Contains(player.userID) && !chest.traitors.Contains(player.userID))
                             {
@@ -1522,17 +1580,17 @@ namespace Oxide.Plugins
 
             void OnTriggerEnter(Collider col)
             {
-                if (started)
-                    return;
-
                 var player = col.ToBaseEntity() as BasePlayer;
 
                 if (!player || !player.IsHuman())
                     return;
 
+                if (players.Contains(player.userID))
+                    return;
+
                 Interface.CallHook("OnPlayerEnteredDangerousEvent", player, containerPos, config.TruePVE.AllowPVPAtEvents);
 
-                if (players.Contains(player.userID))
+                if (started)
                     return;
 
                 if (config.Unlock.LockToPlayerFirstEntered && !userid.IsSteamId())
@@ -1574,7 +1632,7 @@ namespace Oxide.Plugins
 
                 if (player.IsHuman())
                     Interface.CallHook("OnPlayerExitedDangerousEvent", player, containerPos, config.TruePVE.AllowPVPAtEvents);
-                else if (player is ScientistNPC npc && npcs.Contains(npc))
+                else if (player is HumanoidNPC npc && npcs.Contains(npc))
                 {
                     if (npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
                         npc.NavAgent.SetDestination(containerPos);
@@ -1658,7 +1716,7 @@ namespace Oxide.Plugins
 
             private bool IsAcceptableWaterDepth(Vector3 position)
             {
-                return WaterLevel.GetOverallWaterDepth(position, true, true, null, false) <= 0.75f;
+                return WaterLevel.GetOverallWaterDepth(position, true, true, null) <= 0.75f;
             }
 
             private bool TestInsideObject(Vector3 position)
@@ -1695,7 +1753,17 @@ namespace Oxide.Plugins
 
             private List<string> _prefabs = new() { "rock", "formation", "junk", "cliff", "invisible" };
 
-            private bool InstantiateEntity(Vector3 position, bool isMurderer, out HumanoidBrain humanoidBrain, out ScientistNPC npc)
+            private static void CopySerializableFields<T>(T src, T dst)
+            {
+                var srcFields = typeof(T).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                foreach (var field in srcFields)
+                {
+                    object value = field.GetValue(src);
+                    field.SetValue(dst, value);
+                }
+            }
+
+            private bool InstantiateEntity(Vector3 position, bool isMurderer, out HumanoidBrain humanoidBrain, out HumanoidNPC npc)
             {
                 var prefabName = StringPool.Get(1536035819);
                 var prefab = GameManager.server.FindPrefab(prefabName);
@@ -1706,7 +1774,9 @@ namespace Oxide.Plugins
                 go.name = prefabName;
 
                 ScientistBrain scientistBrain = go.GetComponent<ScientistBrain>();
-                npc = go.GetComponent<ScientistNPC>();
+                ScientistNPC scientistNpc = go.GetComponent<ScientistNPC>(); 
+                
+                npc = go.AddComponent<HumanoidNPC>();
 
                 humanoidBrain = go.AddComponent<HumanoidBrain>();
                 humanoidBrain.Instance = Instance;
@@ -1720,12 +1790,16 @@ namespace Oxide.Plugins
                 humanoidBrain._baseEntity = npc;
                 humanoidBrain.tc = this;
                 humanoidBrain.npc = npc;
+                humanoidBrain.states ??= new();
+                npc.Brain = humanoidBrain;
 
+                CopySerializableFields(scientistNpc, npc);
                 DestroyImmediate(scientistBrain, true);
+                DestroyImmediate(scientistNpc, true);
 
                 SceneManager.MoveGameObjectToScene(go, Rust.Server.EntityScene);
 
-                go.SetActive(true); //go.AwakeFromInstantiate();
+                go.SetActive(true);
 
                 return npc != null;
             }
@@ -1762,7 +1836,7 @@ namespace Oxide.Plugins
                 return vector;
             }
 
-            private ScientistNPC SpawnNpc(bool isMurderer)
+            private HumanoidNPC SpawnNpc(bool isMurderer)
             {
                 var positions = RandomWanderPositions(Radius * 0.9f);
 
@@ -1784,17 +1858,18 @@ namespace Oxide.Plugins
                 }
 
                 brain.isMurderer = isMurderer;
-                brain.displayName = npc.displayName;
-                //npc.skinID = 14922524;
+                npc.skinID = 14922525;
                 npc.userID = (ulong)UnityEngine.Random.Range(0, 10000000);
                 npc.UserIDString = npc.userID.ToString();
                 Instance.HumanoidBrains[brain.uid = npc.userID] = brain;
 
                 if (isMurderer)
                 {
-                    npc.displayName = config.NPC.Murderers.RandomNames.Count > 0 ? config.NPC.Murderers.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
+                    brain.displayName = config.NPC.Murderers.RandomNames.Count > 0 ? config.NPC.Murderers.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
                 }
-                else npc.displayName = config.NPC.Scientists.RandomNames.Count > 0 ? config.NPC.Scientists.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
+                else brain.displayName = config.NPC.Scientists.RandomNames.Count > 0 ? config.NPC.Scientists.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
+
+                npc.displayName = brain.displayName;
 
                 BasePlayer.bots.Add(npc);
 
@@ -1818,7 +1893,7 @@ namespace Oxide.Plugins
                 public List<PlayerInventoryProperties.ItemAmountSkinned> wear = new();
             }
 
-            private PlayerInventoryProperties GetLoadout(ScientistNPC npc, HumanoidBrain brain, bool isMurderer)
+            private PlayerInventoryProperties GetLoadout(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
                 var loadout = CreateLoadout(npc, brain, isMurderer);
                 var pip = ScriptableObject.CreateInstance<PlayerInventoryProperties>();
@@ -1830,7 +1905,7 @@ namespace Oxide.Plugins
                 return pip;
             }
 
-            private Loadout CreateLoadout(ScientistNPC npc, HumanoidBrain brain, bool isMurderer)
+            private Loadout CreateLoadout(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
                 var loadout = new Loadout();
                 var items = isMurderer ? config.NPC.Murderers.Items : config.NPC.Scientists.Items;
@@ -1887,7 +1962,7 @@ namespace Oxide.Plugins
                 });
             }
 
-            private void SetupNpc(ScientistNPC npc, HumanoidBrain brain, bool isMurderer, List<Vector3> positions)
+            private void SetupNpc(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer, List<Vector3> positions)
             {
                 if (isMurderer && config.NPC.Murderers.DespawnInventory || !isMurderer && config.NPC.Scientists.DespawnInventory)
                 {
@@ -1922,7 +1997,7 @@ namespace Oxide.Plugins
                 GiveKit(npc, brain, isMurderer);
             }
 
-            private void GiveKit(ScientistNPC npc, HumanoidBrain brain, bool isMurderer)
+            private void GiveKit(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
                 brain.isMurderer = isMurderer;
 
@@ -1940,7 +2015,9 @@ namespace Oxide.Plugins
                     }
                 }
 
-                bool isInventoryEmpty = npc.inventory.AllItems().Length == 0;
+                List<Item> itemList = Pool.Get<List<Item>>();
+                bool isInventoryEmpty = npc.inventory.GetAllItems(itemList) == 0;
+                Pool.FreeUnmanaged(ref itemList);
 
                 if (isInventoryEmpty)
                 {
@@ -1962,7 +2039,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            private void UpdateItems(ScientistNPC npc, HumanoidBrain brain, bool isMurderer)
+            private void UpdateItems(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
                 brain.Init();
                 brain.isMurderer = isMurderer;
@@ -1975,7 +2052,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            private bool ToggleNpcMinerHat(ScientistNPC npc, bool state)
+            private bool ToggleNpcMinerHat(HumanoidNPC npc, bool state)
             {
                 if (npc.IsNull() || npc.inventory == null || npc.IsDead())
                 {
@@ -1999,41 +2076,50 @@ namespace Oxide.Plugins
                 return true;
             }
 
-            public void EquipWeapon(ScientistNPC npc, HumanoidBrain brain)
+            public void EquipWeapon(HumanoidNPC npc, HumanoidBrain brain)
             {
                 bool isHoldingProjectileWeapon = false;
 
-                foreach (Item item in npc.inventory.AllItems())
+                List<Item> itemList = Pool.Get<List<Item>>();
+                npc.inventory.GetAllItems(itemList);
+                try
                 {
-                    if (item.GetHeldEntity() is HeldEntity e && e.IsValid())
+                    foreach (Item item in itemList)
                     {
-                        if (item.skin != 0)
+                        if (item.GetHeldEntity() is HeldEntity e && e.IsValid())
                         {
-                            e.skinID = item.skin;
-                            e.SendNetworkUpdate();
+                            if (item.skin != 0)
+                            {
+                                e.skinID = item.skin;
+                                e.SendNetworkUpdate();
+                            }
+
+                            if (e.ShortPrefabName == "rocket_launcher.entity" || e.ShortPrefabName == "mgl.entity")
+                            {
+                                continue;
+                            }
+
+                            if (e is not AttackEntity attackEntity)
+                            {
+                                continue;
+                            }
+
+                            if (!isHoldingProjectileWeapon && attackEntity.hostileScore >= 2f && item.GetRootContainer() == npc.inventory.containerBelt && brain._attackEntity.IsNull())
+                            {
+                                isHoldingProjectileWeapon = e is BaseProjectile;
+
+                                brain.UpdateWeapon(attackEntity, item.uid);
+                            }
                         }
 
-                        if (e.ShortPrefabName == "rocket_launcher.entity" || e.ShortPrefabName == "mgl.entity")
-                        {
-                            continue;
-                        }
-
-                        if (e is not AttackEntity attackEntity)
-                        {
-                            continue;
-                        }
-
-                        if (!isHoldingProjectileWeapon && attackEntity.hostileScore >= 2f && item.GetRootContainer() == npc.inventory.containerBelt && brain._attackEntity.IsNull())
-                        {
-                            isHoldingProjectileWeapon = e is BaseProjectile;
-
-                            brain.UpdateWeapon(attackEntity, item.uid);
-                        }
+                        item.MarkDirty();
                     }
-
-                    item.MarkDirty();
                 }
-                brain.IdentifyWeapon();
+                finally
+                {
+                    Pool.FreeUnmanaged(ref itemList);
+                    brain.IdentifyWeapon();
+                }
             }
 
             void SetupNpcKits()
@@ -2135,7 +2221,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            private void SafelyKill(ScientistNPC npc)
+            private void SafelyKill(HumanoidNPC npc)
             {
                 if (!npc.IsRealNull() && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
                 {
@@ -2496,7 +2582,7 @@ namespace Oxide.Plugins
             return EventTerritory(player.transform.position) ? msg("CannotTeleport", player.UserIDString) : null;
         }
 
-        object CanBradleyApcTarget(BradleyAPC apc, ScientistNPC npc)
+        object CanBradleyApcTarget(BradleyAPC apc, HumanoidNPC npc)
         {
             return npc != null && HasNPC(npc.userID) ? (object)false : null;
         }
@@ -2514,9 +2600,9 @@ namespace Oxide.Plugins
             return null;
         }
 
-        private object OnNpcDuck(ScientistNPC npc) => npc != null && HasNPC(npc.userID) ? true : (object)null;
+        private object OnNpcDuck(HumanoidNPC npc) => npc != null && HasNPC(npc.userID) ? true : (object)null;
 
-        private object OnNpcDestinationSet(ScientistNPC npc, Vector3 newDestination)
+        private object OnNpcDestinationSet(HumanoidNPC npc, Vector3 newDestination)
         {
             if (npc.IsNull() || npc.NavAgent == null || !npc.NavAgent.enabled || !npc.NavAgent.isOnNavMesh)
             {
@@ -2531,7 +2617,7 @@ namespace Oxide.Plugins
             return true;
         }
 
-        private object OnNpcResume(ScientistNPC npc)
+        private object OnNpcResume(HumanoidNPC npc)
         {
             if (npc.IsNull())
             {
@@ -2586,46 +2672,6 @@ namespace Oxide.Plugins
 
         object OnNpcTarget(BasePlayer target, BaseNpc npc) => OnNpcTarget(npc, target);
 
-        void OnPlayerDeath(ScientistNPC npc, HitInfo hitInfo)
-        {
-            if (npc == null)
-            {
-                return;
-            }
-
-            if (!HumanoidBrains.TryGetValue(npc.userID, out var brain))
-            {
-                return;
-            }
-
-            brain.DisableShouldThink();
-
-            if (brain.tc == null)
-            {
-                return;
-            }
-
-            if (brain.isMurderer && config.NPC.Murderers.DespawnInventory || !brain.isMurderer && config.NPC.Scientists.DespawnInventory)
-            {
-                npc.inventory.Strip();
-            }
-
-            npc.svActiveItemID = default(ItemId);
-            npc.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
-
-            brain.tc.npcs.Remove(npc);
-
-            if (brain.tc.whenNpcsDie && brain.tc.npcs.Count == 0)
-            {
-                brain.tc.Unlock();
-            }
-
-            if (config.Unlock.LockToPlayerOnNpcDeath)
-            {
-                brain.tc.TrySetOwner(hitInfo);
-            }
-        }
-
         void OnEntitySpawned(BaseLock entity)
         {
             NextTick(() =>
@@ -2672,7 +2718,6 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnNpcResume));
                 Unsubscribe(nameof(OnNpcDestinationSet));
                 Unsubscribe(nameof(CanBradleyApcTarget));
-                Unsubscribe(nameof(OnPlayerDeath));
             }
         }
 
@@ -2891,7 +2936,7 @@ namespace Oxide.Plugins
                 return null;
             }
 
-            if (entity is ScientistNPC && HasNPC(entity.ToPlayer().userID))
+            if (entity is HumanoidNPC && HasNPC(entity.ToPlayer().userID))
             {
                 return true;
             }
@@ -3410,8 +3455,6 @@ namespace Oxide.Plugins
                     {
                         Subscribe(nameof(OnNpcKits));
                     }
-
-                    Subscribe(nameof(OnPlayerDeath));
                 }
 
                 Subscribe(nameof(CanEntityTakeDamage));
@@ -3443,7 +3486,6 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnItemRemovedFromContainer));
                 Unsubscribe(nameof(CanLootEntity));
                 Unsubscribe(nameof(CanBuild));
-                Unsubscribe(nameof(OnPlayerDeath));
             }
         }
 
@@ -4075,7 +4117,6 @@ namespace Oxide.Plugins
                 Subscribe(nameof(OnNpcDestinationSet));
                 Subscribe(nameof(OnEntityEnter));
                 Subscribe(nameof(OnEntitySpawned));
-                Subscribe(nameof(OnPlayerDeath));
                 Subscribe(nameof(CanBradleyApcTarget));
                 chest.Invoke(chest.SpawnNpcs, 1f);
             }
