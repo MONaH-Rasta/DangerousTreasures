@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.1")]
+    [Info("Dangerous Treasures", "nivex", "2.4.2")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -3868,7 +3868,10 @@ namespace Oxide.Plugins
 
                     pos.y = GetSpawnHeight(pos);
 
-                    _gridPositions.Add(pos);
+                    if (pos.y >= 0)
+                    {
+                        _gridPositions.Add(pos);
+                    }
                 }
             }
         }
