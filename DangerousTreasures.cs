@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.2")]
+    [Info("Dangerous Treasures", "nivex", "2.4.3")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -41,7 +41,7 @@ namespace Oxide.Plugins
         private List<int> obstructionLayers = new() { Layers.Mask.Player_Server, Layers.Mask.Construction, Layers.Mask.Deployed };
         private List<string> _blockedColliders = new() { "powerline_", "invisible_", "TopCol", "train", "swamp_", "floating_" };
         private List<string> underground = new() { "Cave", "Sewer Branch", "Military Tunnel", "Underwater Lab", "Train Tunnel" };
-        private List<Vector3> _gridPositions = new();
+        private HashSet<Vector3> _gridPositions = new();
         private const int TARGET_MASK = 8454145;
         private const int targetMask = Layers.Mask.World | Layers.Mask.Terrain | Layers.Mask.Default;
         private const int visibleMask = Layers.Mask.Deployed | Layers.Mask.Construction | targetMask;
@@ -1214,7 +1214,7 @@ namespace Oxide.Plugins
 
                 private void Track()
                 {
-                    if (!chest || chest.started || player.IsKilled() || !player.IsConnected || !chest.players.Contains(player.userID))
+                    if (chest == null || chest.started || player.IsKilled() || !player.IsConnected || !chest.players.Contains(player.userID))
                     {
                         Destroy(this);
                         return;
@@ -1582,7 +1582,7 @@ namespace Oxide.Plugins
             {
                 var player = col.ToBaseEntity() as BasePlayer;
 
-                if (!player || !player.IsHuman())
+                if (player == null || !player.IsHuman())
                     return;
 
                 if (players.Contains(player.userID))
@@ -2282,7 +2282,7 @@ namespace Oxide.Plugins
                 var prefab = config.Rocket.FireRockets ? "assets/prefabs/ammo/rocket/rocket_fire.prefab" : "assets/prefabs/ammo/rocket/rocket_basic.prefab";
                 var missile = GameManager.server.CreateEntity(prefab, missilePos) as TimedExplosive;
 
-                if (!missile)
+                if (missile == null)
                 {
                     config.MissileLauncher.Enabled = false;
                     DestroyLauncher();
@@ -2753,7 +2753,7 @@ namespace Oxide.Plugins
         {
             var player = planner?.GetOwnerPlayer();
 
-            if (!player || player.IsAdmin) return null;
+            if (player == null || player.IsAdmin) return null;
 
             var chest = Get(player.transform.position);
 
@@ -3381,7 +3381,7 @@ namespace Oxide.Plugins
         {
             List<T> entities = Pool.Get<List<T>>();
             Vis.Entities(a, n, entities, m, QueryTriggerInteraction.Collide);
-            entities.RemoveAll(x => !x || x.IsDestroyed);
+            entities.RemoveAll(x => x == null || x.IsDestroyed);
             return entities;
         }
 
@@ -3883,7 +3883,7 @@ namespace Oxide.Plugins
                 SetupPositions();
             }
 
-            return _gridPositions.GetRandom();
+            return _gridPositions.ElementAt(UnityEngine.Random.Range(0, _gridPositions.Count));
         }
 
         TreasureChest TryOpenEvent(BasePlayer player = null)
@@ -3919,10 +3919,10 @@ namespace Oxide.Plugins
             }
 
             container.dropsLoot = false;
-            container.SetFlag(BaseEntity.Flags.Locked, true);
-            container.SetFlag(BaseEntity.Flags.OnFire, true);
             container.enableSaving = false;
             container.Spawn();
+            container.SetFlag(BaseEntity.Flags.OnFire, true);
+            container.SetFlag(BaseEntity.Flags.Locked, true);
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
             chest.go = chest.gameObject;
@@ -3952,7 +3952,7 @@ namespace Oxide.Plugins
             float unlockTime = UnityEngine.Random.Range(config.Unlock.MinTime, config.Unlock.MaxTime);
 
             SubscribeHooks(true);
-            treasureChests.Add(uid, chest);
+            treasureChests[uid] = chest;
 
             var posStr = FormatGridReference(container.transform.position, config.Settings.ShowGrid);
             Puts("{0}: {1}", FormatGridReference(container.transform.position, true), string.Join(", ", container.inventory.itemList.Select(item => string.Format("{0} ({1})", item.info.displayName.translated, item.amount))));
@@ -4104,7 +4104,7 @@ namespace Oxide.Plugins
             float unlockTime = UnityEngine.Random.Range(config.Unlock.MinTime, config.Unlock.MaxTime);
 
             chest.Radius = radius;
-            treasureChests.Add(container.net.ID, chest);
+            treasureChests[container.net.ID] = chest;
             chest.Invoke(() => chest.SetUnlockTime(unlockTime), 2f);
             data.TotalEvents++;
             SaveData();
@@ -4268,7 +4268,7 @@ namespace Oxide.Plugins
 
         void DrawText(BasePlayer player, Vector3 drawPos, string text)
         {
-            if (!player || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || config.Event.DrawTime < 1f)
+            if (player == null || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || config.Event.DrawTime < 1f)
                 return;
 
             bool isAdmin = player.IsAdmin;
@@ -4475,7 +4475,7 @@ namespace Oxide.Plugins
                 else if (args[0].ToLower() == "showdebuggrid")
                 {
                     if (_gridPositions.Count < 5000) SetupPositions();
-                    _gridPositions.ForEach(pos =>
+                    _gridPositions.ToList().ForEach(pos =>
                     {
                         if (player.Distance(pos) > 1000f) return;
                         player.SendConsoleCommand("ddraw.text", 30f, Color.green, pos, "X");
@@ -5847,16 +5847,17 @@ namespace Oxide.Plugins
         protected override void LoadConfig()
         {
             base.LoadConfig();
+            canSaveConfig = false;
             try
             {
                 config = Config.ReadObject<Configuration>();
                 config ??= new();
                 ValidateConfig();
+                canSaveConfig = true;
                 SaveConfig();
             }
             catch (Exception ex)
             {
-                canSaveConfig = false;
                 Puts(ex.ToString());
                 LoadDefaultConfig();
             }
@@ -5971,12 +5972,12 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static bool UserHasGroup(this string a, string b) { if (string.IsNullOrEmpty(a)) return false; if (p == null) { p = Interface.Oxide.GetLibrary<Core.Libraries.Permission>(null); } return p.UserHasGroup(a, b); }
         public static bool UserHasGroup(this IPlayer a, string b) { return !(a == null) && a.Id.UserHasGroup(b); }
         public static bool IsReallyConnected(this BasePlayer a) { return a.IsReallyValid() && a.net.connection != null; }
-        public static bool IsKilled(this BaseNetworkable a) { return (object)a == null || a.IsDestroyed; }
+        public static bool IsKilled(this BaseNetworkable a) => a == null || a.IsDestroyed || !a.IsFullySpawned();
         public static bool IsNull<T>(this T a) where T : class { return a == null; }
-        public static bool IsNull(this BasePlayer a) { return (object)a == null; }
-        public static bool IsReallyValid(this BaseNetworkable a) { return !((object)a == null || a.IsDestroyed || (object)a.net == null); }
+        public static bool IsNull(this BasePlayer a) => a == null || a.IsDestroyed;
+        public static bool IsReallyValid(this BaseNetworkable a) { return !(a == null || a.IsDestroyed || !a.IsFullySpawned() || a.net == null); }
         public static void SafelyKill(this BaseNetworkable a) { if (a.IsKilled()) { return; } a.Kill(BaseNetworkable.DestroyMode.None); }
-        public static bool CanCall(this Plugin o) { return (object)o != null && o.IsLoaded; }
+        public static bool CanCall(this Plugin o) { return o != null && o.IsLoaded; }
         public static bool IsHuman(this BasePlayer a) { return !(a.IsNpc || !a.userID.IsSteamId()); }
         public static float Distance(this Vector3 a, Vector3 b) => (a - b).magnitude;
         public static void ResetToPool<K, V>(this Dictionary<K, V> obj) { if (obj == null) return; obj.Clear(); Pool.FreeUnmanaged(ref obj); }
