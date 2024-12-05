@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.4")]
+    [Info("Dangerous Treasures", "nivex", "2.4.5")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -2550,7 +2550,7 @@ namespace Oxide.Plugins
         {
             LoadData();
             TryWipeData();
-            BlockZoneManagerZones();
+            BlockZoneManagerZones(true);
             InitializeMonuments();
             InitializeSkins();
             timer.Repeat(Mathf.Clamp(config.EventMessages.Interval, 1f, 60f), 0, CheckNotifications);
@@ -3101,7 +3101,7 @@ namespace Oxide.Plugins
             }
         }
 
-        void BlockZoneManagerZones()
+        void BlockZoneManagerZones(bool show)
         {
             managedZones.Clear();
 
@@ -3110,7 +3110,7 @@ namespace Oxide.Plugins
                 return;
             }
 
-            timer.Once(30f, BlockZoneManagerZones);
+            timer.Once(30f, () => BlockZoneManagerZones(false));
 
             var zoneIds = ZoneManager?.Call("GetZoneIDs") as string[];
 
@@ -3148,7 +3148,7 @@ namespace Oxide.Plugins
                 managedZones[position] = zoneInfo;
             }
 
-            if (managedZones.Count > 0)
+            if (show && managedZones.Count > 0)
             {
                 Puts("Blocked {0} zone manager zones", managedZones.Count);
             }
