@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.3")]
+    [Info("Dangerous Treasures", "nivex", "2.4.4")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -76,7 +76,6 @@ namespace Oxide.Plugins
         private class StoredData
         {
             public Dictionary<string, PlayerInfo> Players = new();
-            public List<NetworkableId> NID = new();
             public double SecondsUntilEvent = double.MinValue;
             public string CustomPosition;
             public int TotalEvents = 0;
@@ -1966,7 +1965,7 @@ namespace Oxide.Plugins
             {
                 if (isMurderer && config.NPC.Murderers.DespawnInventory || !isMurderer && config.NPC.Scientists.DespawnInventory)
                 {
-                    npc.LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
+                    npc.LootSpawnSlots = Array.Empty<LootContainer.LootSpawnSlot>();
                 }
 
                 var alternate = isMurderer ? config.NPC.Murderers.Alternate : config.NPC.Scientists.Alternate;
@@ -1984,7 +1983,7 @@ namespace Oxide.Plugins
                         }
                     }
                 }
-                else npc.LootSpawnSlots = new LootContainer.LootSpawnSlot[0];
+                else npc.LootSpawnSlots = Array.Empty<LootContainer.LootSpawnSlot>();
 
                 npc.CancelInvoke(npc.PlayRadioChatter);
                 npc.DeathEffects = Array.Empty<GameObjectRef>();
@@ -3073,21 +3072,9 @@ namespace Oxide.Plugins
         private void LoadData()
         {
             try { data = Interface.Oxide.DataFileSystem.ReadObject<StoredData>(Name); } catch { }
-
-            sd_customPos = string.IsNullOrEmpty(data.CustomPosition) ? Vector3.zero : data.CustomPosition.ToVector3();
-
             data ??= new();
             data.Players ??= new();
-            data.NID ??= new();
-
-            if (data.NID.Count > 0)
-            {
-                foreach (var uid in data.NID.ToList())
-                {
-                    data.NID.Remove(uid);
-                    BaseNetworkable.serverEntities.Find(uid).SafelyKill();
-                }
-            }
+            sd_customPos = string.IsNullOrEmpty(data.CustomPosition) ? Vector3.zero : data.CustomPosition.ToVector3();
         }
 
         void TryWipeData()
@@ -3116,10 +3103,14 @@ namespace Oxide.Plugins
 
         void BlockZoneManagerZones()
         {
+            managedZones.Clear();
+
             if (!ZoneManager.CanCall())
             {
                 return;
             }
+
+            timer.Once(30f, BlockZoneManagerZones);
 
             var zoneIds = ZoneManager?.Call("GetZoneIDs") as string[];
 
@@ -3127,8 +3118,6 @@ namespace Oxide.Plugins
             {
                 return;
             }
-
-            managedZones.Clear();
 
             foreach (string zoneId in zoneIds)
             {
@@ -3758,7 +3747,7 @@ namespace Oxide.Plugins
                         continue;
                     }
 
-                    if (IsLayerBlocked(hit.point, config.Event.Radius + 10f, obstructionLayer))
+                    if (IsLayerBlocked(hit.point, config.Event.Radius + 10f, obstructionLayer) || IsPositionBlocked(hit.point))
                     {
                         continue;
                     }
@@ -3798,7 +3787,7 @@ namespace Oxide.Plugins
                 var mon = list.GetRandom();
                 var pos = mon.Value.position;
 
-                if (!IsTooClose(pos, 1f) && !IsZoneBlocked(pos) && !IsLayerBlocked(pos, config.Event.Radius + 10f, obstructionLayer))
+                if (!IsTooClose(pos, 1f) && !IsZoneBlocked(pos) && !IsLayerBlocked(pos, config.Event.Radius + 10f, obstructionLayer) && !IsPositionBlocked(pos))
                 {
                     position = pos;
                     break;
@@ -3831,9 +3820,9 @@ namespace Oxide.Plugins
 
             if (!config.Monuments.Underground)
             {
-                entities.RemoveAll(e => e.IsKilled() || e.transform.position.y < position.y);
+                entities.RemoveAll(e => e.IsKilled() || e.transform.position.y < position.y || IsPositionBlocked(e.transform.position));
             }
-            else entities.RemoveAll(e => e.IsKilled());
+            else entities.RemoveAll(e => e.IsKilled() || IsPositionBlocked(e.transform.position));
 
             if (entities.Count < 2)
             {
@@ -3855,7 +3844,7 @@ namespace Oxide.Plugins
             return position;
         }
 
-        void SetupPositions()
+        private void SetupPositions()
         {
             int minPos = (int)(World.Size / -2f);
             int maxPos = (int)(World.Size / 2f);
@@ -3868,12 +3857,26 @@ namespace Oxide.Plugins
 
                     pos.y = GetSpawnHeight(pos);
 
-                    if (pos.y >= 0)
+                    if (pos.y >= 0 && !IsPositionBlocked(pos))
                     {
                         _gridPositions.Add(pos);
                     }
                 }
             }
+        }
+
+        private bool IsPositionBlocked(Vector3 pos)
+        {
+            if (config.Settings.BlockedPositions.Count > 0 && config.Settings.BlockedPositions.Exists(a => InRange2D(pos, a.position, a.radius)))
+            {
+                return true;
+            }
+            if (config.Settings.BlockedGrids.Count > 0)
+            {
+                string grid = MapHelper.PositionToString(pos);
+                return config.Settings.BlockedGrids.Exists(blockedGrid => grid.Equals(blockedGrid, StringComparison.OrdinalIgnoreCase));
+            }
+            return false;
         }
 
         public Vector3 RandomDropPosition()
@@ -4192,7 +4195,7 @@ namespace Oxide.Plugins
 
             if (showGrid)
             {
-                return string.IsNullOrEmpty(monumentName) ? PhoneController.PositionToGridCoord(position) : $"{monumentName} ({PhoneController.PositionToGridCoord(position)})";
+                return string.IsNullOrEmpty(monumentName) ? MapHelper.PositionToString(position) : $"{monumentName} ({MapHelper.PositionToString(position)})";
             }
 
             return string.IsNullOrEmpty(monumentName) ? string.Empty : monumentName;
@@ -4398,7 +4401,7 @@ namespace Oxide.Plugins
                     var ladder = data.Players.ToDictionary(k => k.Key, v => args[0].ToLower() == "ladder" ? v.Value.StolenChestsSeed : v.Value.StolenChestsTotal).Where(kvp => kvp.Value > 0).ToList();
                     ladder.Sort((x, y) => y.Value.CompareTo(x.Value));
 
-                    var ranked = msg(args[0].ToLower() == "ladder" ? "Ladder" : "Ladder Total", player.UserIDString);
+                    var ranked = msg2(args[0].ToLower() == "ladder" ? "Ladder" : "Ladder Total", player.UserIDString);
 
                     if (!string.IsNullOrEmpty(ranked))
                     {
@@ -4410,7 +4413,7 @@ namespace Oxide.Plugins
                         string name = covalence.Players.FindPlayerById(kvp.Key)?.Name ?? kvp.Key;
                         string value = kvp.Value.ToString("N0");
 
-                        sb.AppendLine(msg("TreasureHunter", player.UserIDString, ++rank, name, value));
+                        sb.AppendLine(msg2("TreasureHunter", player.UserIDString, ++rank, name, value));
                     }
 
                     Message(player, sb.ToString());
@@ -4467,12 +4470,12 @@ namespace Oxide.Plugins
                         else player.Teleport(position);
                     }
                 }
-                else if (args[0].ToLower() == "additem")
+                else if (args[0].Equals("additem", StringComparison.OrdinalIgnoreCase))
                 {
                     AddItem(player, args.Skip(1));
                     return;
                 }
-                else if (args[0].ToLower() == "showdebuggrid")
+                else if (args[0].Equals("showdebuggrid", StringComparison.OrdinalIgnoreCase))
                 {
                     if (_gridPositions.Count < 5000) SetupPositions();
                     _gridPositions.ToList().ForEach(pos =>
@@ -4482,7 +4485,7 @@ namespace Oxide.Plugins
                     });
                     return;
                 }
-                else if (args[0].ToLower() == "testblocked")
+                else if (args[0].Equals("testblocked", StringComparison.OrdinalIgnoreCase))
                 {
                     Player.Message(player, $"IsLayerBlocked: {IsLayerBlocked(player.transform.position, 25f, obstructionLayer)}");
                     Player.Message(player, $"SafeZone: {IsSafeZone(player.transform.position)}");
@@ -5022,6 +5025,50 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Show Grid Coordinates")]
             public bool ShowGrid { get; set; } = true;
+
+            [JsonProperty(PropertyName = "Grids To Block Spawns At", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> BlockedGrids = new();
+
+            [JsonProperty(PropertyName = "Block Spawns At Positions", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<ManagementSettingsLocations> BlockedPositions = new() { new(Vector3.zero, 1f) };
+        }
+
+        public class ManagementSettingsLocations
+        {
+            [JsonProperty(PropertyName = "position")]
+            [JsonConverter(typeof(UnityVector3Converter))]
+            public Vector3 position;
+            public float radius;
+            public ManagementSettingsLocations() { }
+            public ManagementSettingsLocations(Vector3 position, float radius)
+            {
+                (this.position, this.radius) = (position, radius);
+            }
+        }
+
+        private class UnityVector3Converter : JsonConverter
+        {
+            public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+            {
+                var vector = (Vector3)value;
+                writer.WriteValue($"{vector.x} {vector.y} {vector.z}");
+            }
+
+            public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+            {
+                if (reader.TokenType == JsonToken.String)
+                {
+                    var values = reader.Value.ToString().Trim().Split(' ');
+                    return new Vector3(Convert.ToSingle(values[0]), Convert.ToSingle(values[1]), Convert.ToSingle(values[2]));
+                }
+                var o = Newtonsoft.Json.Linq.JObject.Load(reader);
+                return new Vector3(Convert.ToSingle(o["x"]), Convert.ToSingle(o["y"]), Convert.ToSingle(o["z"]));
+            }
+
+            public override bool CanConvert(Type objectType)
+            {
+                return objectType == typeof(Vector3);
+            }
         }
 
         public class CountdownSettings
@@ -5960,7 +6007,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static bool All<T>(this IEnumerable<T> a, Func<T, bool> b) { foreach (T c in a) { if (!b(c)) { return false; } } return true; }
         public static T ElementAt<T>(this IEnumerable<T> a, int b) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == 0) { return c.Current; } b--; } } return default(T); }
         public static bool Exists<T>(this IEnumerable<T> a, Func<T, bool> b = null) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == null || b(c.Current)) { return true; } } } return false; }
-        public static T FirstOrDefault<T>(this IEnumerable<T> a, Func<T, bool> b = null) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == null || b(c.Current)) { return c.Current; } } } return default(T); }
+        public static T FirstOrDefault<T>(this IEnumerable<T> a, Func<T, bool> b = null) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == null || b(c.Current)) { return c.Current; } } } return default; }
         public static IEnumerable<V> Select<T, V>(this IEnumerable<T> a, Func<T, V> b) { var c = new List<V>(); using (var d = a.GetEnumerator()) { while (d.MoveNext()) { c.Add(b(d.Current)); } } return c; }
         public static string[] Skip(this string[] a, int b) { if (a.Length == 0) { return Array.Empty<string>(); } string[] c = new string[a.Length - b]; int n = 0; for (int i = 0; i < a.Length; i++) { if (i < b) continue; c[n] = a[i]; n++; } return c; }
         public static List<T> Take<T>(this IList<T> a, int b) { var c = new List<T>(); for (int i = 0; i < a.Count; i++) { if (c.Count == b) { break; } c.Add(a[i]); } return c; }
