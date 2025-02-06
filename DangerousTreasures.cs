@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.5")]
+    [Info("Dangerous Treasures", "nivex", "2.4.6")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -86,6 +86,8 @@ namespace Oxide.Plugins
         {
             public new HumanoidBrain Brain;
 
+            public Configuration config => Brain.Instance.config;
+
             public new Translate.Phrase LootPanelTitle => displayName;
 
             public override string Categorize() => "Humanoid";
@@ -102,7 +104,7 @@ namespace Oxide.Plugins
                 info.attackerDistance = Vector3.Distance(Brain.ServerPosition, Brain.AttackPosition);
             }
 
-            public override void OnKilled(HitInfo info)
+            public override void OnDied(HitInfo info)
             {
                 Brain.DisableShouldThink();
 
@@ -111,7 +113,7 @@ namespace Oxide.Plugins
                     return;
                 }
 
-                if (Brain.isMurderer && Brain.Instance.config.NPC.Murderers.DespawnInventory || !Brain.isMurderer && Brain.Instance.config.NPC.Scientists.DespawnInventory)
+                if (Brain.isMurderer && config.NPC.Murderers.DespawnInventory || !Brain.isMurderer && config.NPC.Scientists.DespawnInventory)
                 {
                     inventory?.Strip();
                 }
@@ -126,12 +128,12 @@ namespace Oxide.Plugins
                     Brain.tc.Unlock();
                 }
 
-                if (Brain.Instance.config.Unlock.LockToPlayerOnNpcDeath)
+                if (config.Unlock.LockToPlayerOnNpcDeath)
                 {
                     Brain.tc.TrySetOwner(info);
                 }
 
-                base.OnKilled(info);
+                base.OnDied(info);
             }
         }
 
@@ -1033,8 +1035,8 @@ namespace Oxide.Plugins
                     if (missile.IsKilled())
                         return;
 
-                    var list = new List<BasePlayer>();
-                    var players = FindEntitiesOfType<BasePlayer>(launchPos, config.Event.Radius + config.MissileLauncher.Distance, Layers.Mask.Player_Server);
+                    using var list = Pool.Get<PooledList<BasePlayer>>();
+                    using var players = FindEntitiesOfType<BasePlayer>(launchPos, config.Event.Radius + config.MissileLauncher.Distance, Layers.Mask.Player_Server);
 
                     for (int i = 0; i < players.Count; i++)
                     {
@@ -1051,8 +1053,6 @@ namespace Oxide.Plugins
 
                         list.Add(player); // acquire a player target 
                     }
-
-                    players.ResetToPool();
 
                     if (list.Count > 0)
                     {
@@ -2705,8 +2705,9 @@ namespace Oxide.Plugins
 
             if (brain.isMurderer && config.NPC.Murderers.DespawnInventory || !brain.isMurderer && config.NPC.Scientists.DespawnInventory)
             {
-                corpse.Invoke(corpse.SafelyKill, 30f);
+                corpse.Invoke(corpse.SafelyKill, brain.isMurderer ? config.NPC.Murderers.DespawnInventoryTime : config.NPC.Scientists.DespawnInventoryTime);
             }
+            else corpse.Invoke(corpse.SafelyKill, brain.isMurderer ? config.NPC.Murderers.CorpseDespawnTime : config.NPC.Scientists.CorpseDespawnTime);
 
             brain.DisableShouldThink();
             UnityEngine.Object.DestroyImmediate(brain);
@@ -3366,9 +3367,9 @@ namespace Oxide.Plugins
             }
         }
 
-        private static List<T> FindEntitiesOfType<T>(Vector3 a, float n, int m = -1) where T : BaseEntity
+        private static PooledList<T> FindEntitiesOfType<T>(Vector3 a, float n, int m = -1) where T : BaseEntity
         {
-            List<T> entities = Pool.Get<List<T>>();
+            PooledList<T> entities = Pool.Get<PooledList<T>>();
             Vis.Entities(a, n, entities, m, QueryTriggerInteraction.Collide);
             entities.RemoveAll(x => x == null || x.IsDestroyed);
             return entities;
@@ -3709,10 +3710,9 @@ namespace Oxide.Plugins
 
         bool IsLayerBlocked(Vector3 position, float radius, int mask)
         {
-            var entities = FindEntitiesOfType<BaseEntity>(position, radius, mask);
+            using var entities = FindEntitiesOfType<BaseEntity>(position, radius, mask);
             entities.RemoveAll(entity => entity.IsNpc || !entity.OwnerID.IsSteamId());
             bool blocked = entities.Count > 0;
-            entities.ResetToPool();
             return blocked;
         }
 
@@ -3801,13 +3801,14 @@ namespace Oxide.Plugins
                 return Vector3.zero;
             }
 
-            var entities = Pool.Get<List<BaseEntity>>();
+            using var entities = Pool.Get<PooledList<BaseEntity>>();
+            Vis.Entities(position, config.Event.Radius, entities);
 
-            foreach (var e in BaseNetworkable.serverEntities.OfType<BaseEntity>())
+            foreach (var e in entities)
             {
                 try
                 {
-                    if (!e.IsKilled() && !entities.Contains(e) && InRange2D(e.transform.position, position, config.Event.Radius))
+                    if (!e.IsKilled() && !entities.Contains(e))
                     {
                         if (e.IsNpc || e is LootContainer)
                         {
@@ -3828,8 +3829,6 @@ namespace Oxide.Plugins
             {
                 position = GetRandomMonumentDropPosition(position);
 
-                entities.ResetToPool();
-
                 return position == Vector3.zero ? GetMonumentDropPosition(++retry) : position;
             }
 
@@ -3838,8 +3837,6 @@ namespace Oxide.Plugins
             position = entity.transform.position;
 
             entity.Invoke(entity.SafelyKill, 0.1f);
-
-            entities.ResetToPool();
 
             return position;
         }
@@ -5546,6 +5543,12 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Despawn Inventory On Death")]
             public bool DespawnInventory { get; set; } = true;
 
+            [JsonProperty(PropertyName = "Corpse Despawn Time When Despawn Inventory On Death")]
+            public float DespawnInventoryTime { get; set; } = 30f;
+
+            [JsonProperty(PropertyName = "Corpse Despawn Time Otherwise")]
+            public float CorpseDespawnTime { get; set; } = 300f;
+
             [JsonProperty(PropertyName = "Die Instantly From Headshots")]
             public bool Headshot { get; set; }
 
@@ -5585,6 +5588,12 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Despawn Inventory On Death")]
             public bool DespawnInventory { get; set; } = true;
+
+            [JsonProperty(PropertyName = "Corpse Despawn Time When Despawn Inventory On Death")]
+            public float DespawnInventoryTime { get; set; } = 30f;
+
+            [JsonProperty(PropertyName = "Corpse Despawn Time Otherwise")]
+            public float CorpseDespawnTime { get; set; } = 300f;
 
             [JsonProperty(PropertyName = "Die Instantly From Headshots")]
             public bool Headshot { get; set; }
