@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.6")]
+    [Info("Dangerous Treasures", "nivex", "2.4.7")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -2568,6 +2568,9 @@ namespace Oxide.Plugins
                 }
             }
 
+            if (_cmc != null)
+                ServerMgr.Instance.StopCoroutine(_cmc);
+
             DangerousTreasuresExtensionMethods.ExtensionMethods.p = null;
         }
 
@@ -3061,7 +3064,7 @@ namespace Oxide.Plugins
         {
             foreach (var x in treasureChests.Values)
             {
-                if (Vector3Ex.Distance2D(x.containerPos, target) <= x.Radius)
+                if ((x.containerPos - target).SqrMagnitude2D() <= x.Radius * x.Radius)
                 {
                     return true;
                 }
@@ -3804,20 +3807,16 @@ namespace Oxide.Plugins
             using var entities = Pool.Get<PooledList<BaseEntity>>();
             Vis.Entities(position, config.Event.Radius, entities);
 
-            foreach (var e in entities)
+            entities.RemoveAll(e =>
             {
-                try
-                {
-                    if (!e.IsKilled() && !entities.Contains(e))
-                    {
-                        if (e.IsNpc || e is LootContainer)
-                        {
-                            entities.Add(e);
-                        }
-                    }
-                }
-                catch { }
-            }
+                if (e.IsKilled() || e.OwnerID != 0 || e.skinID != 0 || e.HasParent()) return true;
+                if (e is NPCPlayer) return false;
+                if (!(e is LootContainer)) return true;
+                if (e.ShortPrefabName.Contains("loot-barrel")) return false;
+                if (e.ShortPrefabName.Contains("loot_barrel")) return false;
+                if (e.ShortPrefabName.StartsWith("crate_")) return false;
+                return true;
+            });
 
             if (!config.Monuments.Underground)
             {
@@ -3836,7 +3835,10 @@ namespace Oxide.Plugins
 
             position = entity.transform.position;
 
-            entity.Invoke(entity.SafelyKill, 0.1f);
+            if (entity is NPCPlayer || entity is LootContainer)
+            {
+                entity.Invoke(entity.SafelyKill, 0.1f);
+            }
 
             return position;
         }
@@ -4986,7 +4988,6 @@ namespace Oxide.Plugins
                     new() { shortname = "explosive.timed", amount = 1, skin = 0, amountMin = 1 },
                     new() { shortname = "metal.facemask", amount = 1, skin = 0, amountMin = 1 },
                     new() { shortname = "metal.plate.torso", amount = 1, skin = 0, amountMin = 1 },
-                    new() { shortname = "mining.quarry", amount = 1, skin = 0, amountMin = 1 },
                     new() { shortname = "pistol.m92", amount = 1, skin = 0, amountMin = 1 },
                     new() { shortname = "rifle.ak", amount = 1, skin = 0, amountMin = 1 },
                     new() { shortname = "rifle.bolt", amount = 1, skin = 0, amountMin = 1 },
