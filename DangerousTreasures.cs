@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.7")]
+    [Info("Dangerous Treasures", "nivex", "2.4.8")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -230,7 +230,7 @@ namespace Oxide.Plugins
 
                 Action action = _attackEntity.ShortPrefabName switch
                 {
-                    "double_shotgun.entity" or "shotgun_pump.entity" or "shotgun_waterpipe.entity" or "spas12.entity" => () =>
+                    "double_shotgun.entity" or "shotgun_pump.entity" or "shotgun_waterpipe.entity" or "spas12.entity" or "blowpipe.entity" or "boomerang.entity" => () =>
                     {
                         SetAttackRestrictions(AttackType.BaseProjectile, 30f, 0f, 30f);
                     }
@@ -1579,6 +1579,9 @@ namespace Oxide.Plugins
 
             void OnTriggerEnter(Collider col)
             {
+                if (col == null || col.ObjectName() == "ZoneManager")
+                    return;
+                
                 var player = col.ToBaseEntity() as BasePlayer;
 
                 if (player == null || !player.IsHuman())
@@ -1624,13 +1627,18 @@ namespace Oxide.Plugins
 
             void OnTriggerExit(Collider col)
             {
+                if (col == null || col.ObjectName() == "ZoneManager")
+                    return;
+
                 var player = col.ToBaseEntity() as BasePlayer;
 
                 if (!player.IsValid())
                     return;
 
                 if (player.IsHuman())
+                {
                     Interface.CallHook("OnPlayerExitedDangerousEvent", player, containerPos, config.TruePVE.AllowPVPAtEvents);
+                }
                 else if (player is HumanoidNPC npc && npcs.Contains(npc))
                 {
                     if (npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
@@ -1862,11 +1870,8 @@ namespace Oxide.Plugins
                 npc.UserIDString = npc.userID.ToString();
                 Instance.HumanoidBrains[brain.uid = npc.userID] = brain;
 
-                if (isMurderer)
-                {
-                    brain.displayName = config.NPC.Murderers.RandomNames.Count > 0 ? config.NPC.Murderers.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
-                }
-                else brain.displayName = config.NPC.Scientists.RandomNames.Count > 0 ? config.NPC.Scientists.RandomNames.GetRandom() : RandomUsernames.Get(npc.userID);
+                List<string> names = isMurderer ? config.NPC.Murderers.RandomNames : config.NPC.Scientists.RandomNames;
+                brain.displayName = names.Count > 0 ? names.GetRandom() : RandomUsernames.Get(npc.userID);
 
                 npc.displayName = brain.displayName;
 
@@ -1896,6 +1901,12 @@ namespace Oxide.Plugins
             {
                 var loadout = CreateLoadout(npc, brain, isMurderer);
                 var pip = ScriptableObject.CreateInstance<PlayerInventoryProperties>();
+
+                if (pip.DeathIconPrefab == null)
+                {
+                    pip.DeathIconPrefab = new();
+                    pip.DeathIconPrefab.guid = "6ff1ff9ea7408824ab5c8f6f3d9ab259";
+                }
 
                 pip.belt = loadout.belt;
                 pip.main = loadout.main;
@@ -1993,11 +2004,13 @@ namespace Oxide.Plugins
                 npc.InitializeHealth(npc.startHealth, npc.startHealth);
                 npc.Invoke(() => UpdateItems(npc, brain, isMurderer), 0.2f);
                 npc.Invoke(() => brain.SetupMovement(positions), 0.3f);
-                GiveKit(npc, brain, isMurderer);
+                npc.Invoke(() => GiveKit(npc, brain, isMurderer), 0.1f);
             }
 
             private void GiveKit(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
+                if (npc.IsDestroyed)
+                    return;
                 brain.isMurderer = isMurderer;
 
                 if (npcKits.TryGetValue(isMurderer ? "murderer" : "scientist", out var kits) && kits.Count > 0)
@@ -2014,9 +2027,8 @@ namespace Oxide.Plugins
                     }
                 }
 
-                List<Item> itemList = Pool.Get<List<Item>>();
+                using var itemList = Pool.Get<PooledList<Item>>();
                 bool isInventoryEmpty = npc.inventory.GetAllItems(itemList) == 0;
-                Pool.FreeUnmanaged(ref itemList);
 
                 if (isInventoryEmpty)
                 {
@@ -2222,10 +2234,15 @@ namespace Oxide.Plugins
 
             private void SafelyKill(HumanoidNPC npc)
             {
-                if (!npc.IsRealNull() && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
+                if (npc != null && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
                 {
+                    if (!brain.AttackEntity.IsKilled())
+                    {
+                        brain.AttackEntity.SetHeld(false);
+                    }
                     brain.DisableShouldThink();
                 }
+
                 npc.SafelyKill();
             }
 
@@ -2996,9 +3013,9 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (HumanoidBrains.TryGetValue(attacker.userID, out var brain) && brain != null && (brain.isMurderer && UnityEngine.Random.Range(0f, 100f) > config.NPC.Murderers.Accuracy.Get(brain) || !brain.isMurderer && UnityEngine.Random.Range(0f, 100f) > config.NPC.Scientists.Accuracy.Get(brain)))
+            if (HumanoidBrains.TryGetValue(attacker.userID, out var brain) && brain != null && brain.AttackEntity != null && (brain.isMurderer && UnityEngine.Random.Range(0f, 100f) > config.NPC.Murderers.Accuracy.Get(brain) || !brain.isMurderer && UnityEngine.Random.Range(0f, 100f) > config.NPC.Scientists.Accuracy.Get(brain)))
             {
-                hitInfo.damageTypes = new();
+                hitInfo.damageTypes?.Clear();
                 hitInfo.DidHit = false;
                 hitInfo.DoHitEffects = false;
             }
@@ -3677,6 +3694,11 @@ namespace Oxide.Plugins
                 return Vector3.zero;
             }
 
+            if (hit.collider.name.StartsWith("ice_sheet") || hit.collider.name.StartsWith("iceberg"))
+            {
+                return Vector3.zero;
+            }
+
             float h = TerrainMeta.HeightMap.GetHeight(position);
 
             position.y = Mathf.Max(hit.point.y, GetSpawnHeight(position));
@@ -3702,6 +3724,10 @@ namespace Oxide.Plugins
 
             if (Physics.Raycast(target.WithY(p), Vector3.down, out var hit, ++p, TARGET_MASK, QueryTriggerInteraction.Ignore))
             {
+                if (hit.collider.name.StartsWith("ice_sheet") || hit.collider.name.StartsWith("iceberg"))
+                {
+                    return -1;
+                }
                 if (!_blockedColliders.Exists(hit.collider.name.StartsWith))
                 {
                     y = Mathf.Max(y, hit.point.y);
@@ -3711,15 +3737,15 @@ namespace Oxide.Plugins
             return flag ? Mathf.Max(y, w) : y;
         }
 
-        bool IsLayerBlocked(Vector3 position, float radius, int mask)
+        private bool IsLayerBlocked(Vector3 position, float radius, int mask)
         {
             using var entities = FindEntitiesOfType<BaseEntity>(position, radius, mask);
-            entities.RemoveAll(entity => entity.IsNpc || !entity.OwnerID.IsSteamId());
+            entities.RemoveAll(entity => entity.IsNpc || entity.limitNetworking || !entity.OwnerID.IsSteamId() && !(entity is BasePlayer));
             bool blocked = entities.Count > 0;
             return blocked;
         }
 
-        Vector3 GetRandomMonumentDropPosition(Vector3 position)
+        private Vector3 GetRandomMonumentDropPosition(Vector3 position)
         {
             foreach (var monument in allowedMonuments.Values)
             {
@@ -5473,42 +5499,42 @@ namespace Oxide.Plugins
 
             public NpcSettingsAccuracy(double accuracy)
             {
-                AK47 = AK47ICE = BOLT_RIFLE = COMPOUND_BOW = CROSSBOW = DOUBLE_SHOTGUN = EOKA = GLOCK = HMLMG = L96 = LR300 = M249 = M39 = M92 = MP5 = NAILGUN = PUMP_SHOTGUN = PYTHON = REVOLVER = SEMI_AUTO_PISTOL = SEMI_AUTO_RIFLE = SPAS12 = SPEARGUN = SMG = SNOWBALL_GUN = THOMPSON = WATERPIPE_SHOTGUN = accuracy;
+                AK47 = AK47ICE = BOLT_RIFLE = DOUBLE_SHOTGUN = EOKA = GLOCK = HMLMG = L96 = LR300 = M249 = M39 = M92 = MP5 = NAILGUN = PUMP_SHOTGUN = PYTHON = REVOLVER = SEMI_AUTO_PISTOL = SEMI_AUTO_RIFLE = SPAS12 = SPEARGUN = SMG = SNOWBALL_GUN = THOMPSON = WATERPIPE_SHOTGUN = accuracy;
+                COMPOUND_BOW = CROSSBOW = 50;
             }
 
             public double Get(HumanoidBrain brain)
             {
-                switch (brain.AttackEntity?.ShortPrefabName)
+                return brain.AttackEntity.ShortPrefabName switch
                 {
-                    case "ak47u.entity": return AK47;
-                    case "ak47u_ice.entity": return AK47ICE;
-                    case "bolt_rifle.entity": return BOLT_RIFLE;
-                    case "compound_bow.entity": return COMPOUND_BOW;
-                    case "crossbow.entity": return CROSSBOW;
-                    case "bow_hunting.entity": return CROSSBOW;
-                    case "double_shotgun.entity": return DOUBLE_SHOTGUN;
-                    case "glock.entity": return GLOCK;
-                    case "hmlmg.entity": return HMLMG;
-                    case "l96.entity": return L96;
-                    case "lr300.entity": return LR300;
-                    case "m249.entity": return M249;
-                    case "m39.entity": return M39;
-                    case "m92.entity": return M92;
-                    case "mp5.entity": return MP5;
-                    case "nailgun.entity": return NAILGUN;
-                    case "pistol_eoka.entity": return EOKA;
-                    case "pistol_revolver.entity": return REVOLVER;
-                    case "pistol_semiauto.entity": return SEMI_AUTO_PISTOL;
-                    case "python.entity": return PYTHON;
-                    case "semi_auto_rifle.entity": return SEMI_AUTO_RIFLE;
-                    case "shotgun_pump.entity": return PUMP_SHOTGUN;
-                    case "shotgun_waterpipe.entity": return WATERPIPE_SHOTGUN;
-                    case "spas12.entity": return SPAS12;
-                    case "speargun.entity": return SPEARGUN;
-                    case "smg.entity": return SMG;
-                    case "snowballgun.entity": return SNOWBALL_GUN;
-                    case "thompson.entity": default: return THOMPSON;
-                }
+                    "ak47u.entity" or "ak47u_med.entity" or "ak47u_diver.entity" or "sks.entity" => AK47,
+                    "ak47u_ice.entity" => AK47ICE,
+                    "bolt_rifle.entity" => BOLT_RIFLE,
+                    "compound_bow.entity" or "legacybow.entity" => COMPOUND_BOW,
+                    "crossbow.entity" or "bow_hunting.entity" or "mini_crossbow.entity" => CROSSBOW,
+                    "double_shotgun.entity" => DOUBLE_SHOTGUN,
+                    "glock.entity" or "hc_revolver.entity" => GLOCK,
+                    "hmlmg.entity" or "mgl.entity" => HMLMG,
+                    "l96.entity" => L96,
+                    "lr300.entity" => LR300,
+                    "m249.entity" or "minigun.entity" => M249,
+                    "m39.entity" => M39,
+                    "m92.entity" => M92,
+                    "mp5.entity" => MP5,
+                    "nailgun.entity" => NAILGUN,
+                    "pistol_eoka.entity" => EOKA,
+                    "pistol_revolver.entity" => REVOLVER,
+                    "pistol_semiauto.entity" => SEMI_AUTO_PISTOL,
+                    "python.entity" => PYTHON,
+                    "semi_auto_rifle.entity" => SEMI_AUTO_RIFLE,
+                    "shotgun_pump.entity" or "blunderbuss.entity" or "m4_shotgun.entity" => PUMP_SHOTGUN,
+                    "shotgun_waterpipe.entity" => WATERPIPE_SHOTGUN,
+                    "spas12.entity" => SPAS12,
+                    "speargun.entity" or "blowpipe.entity" or "boomerang.entity" => SPEARGUN,
+                    "smg.entity" or "t1_smg" => SMG,
+                    "snowballgun.entity" => SNOWBALL_GUN,
+                    "thompson.entity" or _ => THOMPSON,
+                };
             }
         }
 
@@ -5945,8 +5971,6 @@ namespace Oxide.Plugins
             if (!string.IsNullOrEmpty(config.Settings.EventChatCommand)) cmd.AddChatCommand(config.Settings.EventChatCommand, this, cmdDangerousTreasures);
             if (!string.IsNullOrEmpty(config.Settings.DistanceChatCommand)) cmd.AddChatCommand(config.Settings.DistanceChatCommand, this, cmdTreasureHunter);
             if (!string.IsNullOrEmpty(config.Settings.EventConsoleCommand)) cmd.AddConsoleCommand(config.Settings.EventConsoleCommand, this, nameof(ccmdDangerousTreasures));
-            if (string.IsNullOrEmpty(config.RankedLadder.Permission)) config.RankedLadder.Permission = "dangeroustreasures.th";
-            if (string.IsNullOrEmpty(config.RankedLadder.Group)) config.RankedLadder.Group = "treasurehunter";
 
             if (!string.IsNullOrEmpty(config.RankedLadder.Permission))
             {
@@ -6026,6 +6050,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static List<T> Where<T>(this IEnumerable<T> a, Func<T, bool> b) { var c = new List<T>(); using (var d = a.GetEnumerator()) { while (d.MoveNext()) { if (b(d.Current)) { c.Add(d.Current); } } } return c; }
         public static List<T> OfType<T>(this IEnumerable<BaseNetworkable> a) where T : BaseEntity { var b = new List<T>(); using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (c.Current is T) { b.Add(c.Current as T); } } } return b; }
         public static int Sum<T>(this IEnumerable<T> a, Func<T, int> b) { int c = 0; foreach (T d in a) { c = checked(c + b(d)); } return c; }
+        public static string ObjectName(this Collider collider) { try { return collider.name ?? string.Empty; } catch { return string.Empty; } }
         public static bool UserHasGroup(this string a, string b) { if (string.IsNullOrEmpty(a)) return false; if (p == null) { p = Interface.Oxide.GetLibrary<Core.Libraries.Permission>(null); } return p.UserHasGroup(a, b); }
         public static bool UserHasGroup(this IPlayer a, string b) { return !(a == null) && a.Id.UserHasGroup(b); }
         public static bool IsReallyConnected(this BasePlayer a) { return a.IsReallyValid() && a.net.connection != null; }
