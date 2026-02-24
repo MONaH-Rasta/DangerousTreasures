@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.4.9")]
+    [Info("Dangerous Treasures", "nivex", "2.5.0")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -49,6 +49,7 @@ namespace Oxide.Plugins
         private const int heightLayer = TARGET_MASK | Layers.Mask.Construction | Layers.Mask.Deployed | Layers.Mask.Clutter;
         private StringBuilder _sb = new();
         private Vector3 sd_customPos;
+        private static ulong BotIdCounter = 624922525;
 
         public class ZoneInfo
         {
@@ -131,6 +132,11 @@ namespace Oxide.Plugins
                 if (config.Unlock.LockToPlayerOnNpcDeath)
                 {
                     Brain.tc.TrySetOwner(info);
+                }
+
+                if (config.Event.DestructTimeResetsWhenKilled && info != null && info.Initiator.Is(out BasePlayer attacker) && attacker.userID.IsSteamId())
+                {
+                    Brain.tc.SetDestructTime();
                 }
 
                 if (config.BlockPaidContent)
@@ -775,10 +781,10 @@ namespace Oxide.Plugins
 
             private void TryToRoam()
             {
-                if (Settings.KillUnderwater && npc.IsSwimming())
+                if (Settings.KillUnderwater && npc.playerCollider != null && npc.IsSwimming())
                 {
                     DisableShouldThink();
-                    npc.Kill();
+                    Instance.SafelyKillNpc(npc);
                     Destroy(this);
                     return;
                 }
@@ -1249,10 +1255,8 @@ namespace Oxide.Plugins
 
                     if (config.NewmanMode.Aura || config.NewmanMode.Harm)
                     {
-                        List<Item> itemList = Pool.Get<List<Item>>();
-                        player.inventory.GetAllItems(itemList);
+                        using var itemList = player.GetAllItems();
                         int sum = itemList.Sum(item => player.IsHostileItem(item) ? 1 : 0);
-                        Pool.FreeUnmanaged(ref itemList);
 
                         if (sum == 0)
                         {
@@ -1443,7 +1447,6 @@ namespace Oxide.Plugins
                 while (j++ < container.inventory.capacity && loot.Count > 0)
                 {
                     var lootItem = loot.GetRandom();
-                    var definition = ItemManager.FindItemDefinition(lootItem.shortname);
 
                     loot.Remove(lootItem);
 
@@ -1451,6 +1454,8 @@ namespace Oxide.Plugins
                     {
                         continue;
                     }
+
+                    var definition = lootItem.definition;
 
                     if (definition == null)
                     {
@@ -1473,7 +1478,7 @@ namespace Oxide.Plugins
 
                     using var skins = Facepunch.Pool.Get<PooledList<ulong>>();
                     skins.AddRange(lootItem.skins);
-                    Instance.RemoveRequiresOwnership(definition.itemid, skins);
+                    Instance.RemoveRequiresOwnership(definition, skins);
                     
                     ulong skin = skins.Count > 0 ? skins.GetRandom() : !Instance.RequiresOwnership(definition, lootItem.skin) ? lootItem.skin : 0;
                     Item item = ItemManager.CreateByName(definition.shortname, amount, skin);
@@ -1526,7 +1531,7 @@ namespace Oxide.Plugins
 
             private bool IsBlacklistedSkin(ItemDefinition def, int num)
             {
-                if (Instance.RequiresOwnership(def.itemid, (ulong)num)) return true;
+                if (Instance.RequiresOwnership(def, (ulong)num)) return true;
                 var skinId = ItemDefinition.FindSkin(def.isRedirectOf?.itemid ?? def.itemid, num);
                 var dirSkin = def.isRedirectOf == null ? def.skins.FirstOrDefault(x => (ulong)x.id == skinId) : def.isRedirectOf.skins.FirstOrDefault(x => (ulong)x.id == skinId);
                 var itemSkin = (dirSkin.id == 0) ? null : (dirSkin.invItem as ItemSkin);
@@ -1620,6 +1625,8 @@ namespace Oxide.Plugins
                 return si;
             }
 
+            public List<ulong> invaders = new();
+
             void OnTriggerEnter(Collider col)
             {
                 if (col == null || col.ObjectName() == "ZoneManager")
@@ -1629,6 +1636,9 @@ namespace Oxide.Plugins
 
                 if (player == null || !player.IsHuman())
                     return;
+
+                if (!invaders.Contains(player.userID))
+                    invaders.Add(player.userID);
 
                 if (players.Contains(player.userID))
                     return;
@@ -1680,6 +1690,7 @@ namespace Oxide.Plugins
 
                 if (player.IsHuman())
                 {
+                    invaders.Remove(player.userID);
                     Interface.CallHook("OnPlayerExitedDangerousEvent", player, containerPos, config.TruePVE.AllowPVPAtEvents);
                 }
                 else if (player is HumanoidNPC npc && npcs.Contains(npc))
@@ -1907,10 +1918,12 @@ namespace Oxide.Plugins
                     return null;
                 }
 
+                ulong userid = BotIdCounter++;
+
                 brain.isMurderer = isMurderer;
                 npc.skinID = 14922525;
-                npc.userID = (ulong)UnityEngine.Random.Range(0, 10000000);
-                npc.UserIDString = npc.userID.ToString();
+                npc.userID = userid;
+                npc.UserIDString = userid.ToString();
                 Instance.HumanoidBrains[brain.uid = npc.userID] = brain;
 
                 List<string> names = isMurderer ? config.NPC.Murderers.RandomNames : config.NPC.Scientists.RandomNames;
@@ -1918,13 +1931,13 @@ namespace Oxide.Plugins
 
                 npc.displayName = brain.displayName;
 
-                BasePlayer.bots.Add(npc);
-
                 npc.loadouts = new PlayerInventoryProperties[0];
 
                 npc.Spawn();
 
                 npc.CancelInvoke(npc.EquipTest);
+
+                BasePlayer.bots.Remove(npc);
 
                 npcs.Add(npc);
 
@@ -2052,8 +2065,9 @@ namespace Oxide.Plugins
 
             private void GiveKit(HumanoidNPC npc, HumanoidBrain brain, bool isMurderer)
             {
-                if (npc.IsDestroyed)
+                if (npc.IsDestroyed || npc.inventory == null)
                     return;
+
                 brain.isMurderer = isMurderer;
 
                 if (npcKits.TryGetValue(isMurderer ? "murderer" : "scientist", out var kits) && kits.Count > 0)
@@ -2070,8 +2084,9 @@ namespace Oxide.Plugins
                     }
                 }
 
-                using var itemList = Pool.Get<PooledList<Item>>();
-                bool isInventoryEmpty = npc.inventory.GetAllItems(itemList) == 0;
+                using var itemList = npc.GetAllItems();
+
+                bool isInventoryEmpty = itemList.Count == 0;
 
                 if (isInventoryEmpty)
                 {
@@ -2134,46 +2149,41 @@ namespace Oxide.Plugins
             {
                 bool isHoldingProjectileWeapon = false;
 
-                List<Item> itemList = Pool.Get<List<Item>>();
-                npc.inventory.GetAllItems(itemList);
-                try
+                using var itemList = npc.GetAllItems();
+
+                foreach (Item item in itemList)
                 {
-                    foreach (Item item in itemList)
+                    if (item == null) continue;
+                    if (item.GetHeldEntity() is HeldEntity e && e.IsValid())
                     {
-                        if (item.GetHeldEntity() is HeldEntity e && e.IsValid())
+                        if (item.skin != 0)
                         {
-                            if (item.skin != 0)
-                            {
-                                e.skinID = item.skin;
-                                e.SendNetworkUpdate();
-                            }
-
-                            if (e.ShortPrefabName == "rocket_launcher.entity" || e.ShortPrefabName == "mgl.entity")
-                            {
-                                continue;
-                            }
-
-                            if (e is not AttackEntity attackEntity)
-                            {
-                                continue;
-                            }
-
-                            if (!isHoldingProjectileWeapon && attackEntity.hostileScore >= 2f && item.GetRootContainer() == npc.inventory.containerBelt && brain._attackEntity.IsNull())
-                            {
-                                isHoldingProjectileWeapon = e is BaseProjectile;
-
-                                brain.UpdateWeapon(attackEntity, item.uid);
-                            }
+                            e.skinID = item.skin;
+                            e.SendNetworkUpdate();
                         }
 
-                        item.MarkDirty();
+                        if (e.ShortPrefabName == "rocket_launcher.entity" || e.ShortPrefabName == "mgl.entity")
+                        {
+                            continue;
+                        }
+
+                        if (e is not AttackEntity attackEntity)
+                        {
+                            continue;
+                        }
+
+                        if (!isHoldingProjectileWeapon && attackEntity != null && attackEntity.hostileScore >= 2f && npc.inventory != null && item.GetRootContainer() == npc.inventory.containerBelt && brain._attackEntity.IsNull())
+                        {
+                            isHoldingProjectileWeapon = e is BaseProjectile;
+
+                            brain.UpdateWeapon(attackEntity, item.uid);
+                        }
                     }
+
+                    item.MarkDirty();
                 }
-                finally
-                {
-                    Pool.FreeUnmanaged(ref itemList);
-                    brain.IdentifyWeapon();
-                }
+
+                brain.IdentifyWeapon();
             }
 
             void SetupNpcKits()
@@ -2275,23 +2285,9 @@ namespace Oxide.Plugins
                 }
             }
 
-            private void SafelyKill(HumanoidNPC npc)
-            {
-                if (npc != null && Instance.HumanoidBrains.TryGetValue(npc.userID, out var brain))
-                {
-                    if (!brain.AttackEntity.IsKilled())
-                    {
-                        brain.AttackEntity.SetHeld(false);
-                    }
-                    brain.DisableShouldThink();
-                }
-
-                npc.SafelyKill();
-            }
-
             private void KillNpc()
             {
-                npcs.ForEach(SafelyKill);
+                npcs.ForEach(Instance.SafelyKillNpc);
             }
 
             public void RemoveMapMarkers()
@@ -2462,16 +2458,15 @@ namespace Oxide.Plugins
                     started = true;
 
                     if (config.Event.DestroySphereOnStart)
-                    {
                         DestroySphere();
-                    }
 
-                    DestroyFire();
+                    if (config.Event.DestroyFireOnStart) 
+                        DestroyFire();
 
-                    DestroyLauncher();
+                    if (config.Event.DestroyLauncherOnStart) 
+                        DestroyLauncher();
 
-                    if (config.Event.DestructTime > 0f && destruct == null)
-                        destruct = Instance.timer.Once(config.Event.DestructTime, Destruct);
+                    SetDestructTime();
 
                     if (config.EventMessages.Started)
                     {
@@ -2503,6 +2498,18 @@ namespace Oxide.Plugins
 
                 container.SetFlag(BaseEntity.Flags.Locked, false);
                 container.SetFlag(BaseEntity.Flags.OnFire, false);
+            }
+
+            public void SetDestructTime()
+            {
+                if (config.Event.DestructTime > 0f)
+                {
+                    if (destruct != null && !destruct.Destroyed)
+                    {
+                        destruct.Destroy();
+                    }
+                    destruct = Instance.timer.Once(config.Event.DestructTime, Destruct);
+                }
             }
 
             public void SetUnlockTime(float time)
@@ -2765,9 +2772,11 @@ namespace Oxide.Plugins
                 return;
             }
 
+            corpse.skinID = 14922525;
+
             brain.tc.npcs.RemoveAll(npc => npc.IsKilled() || npc.userID == corpse.playerSteamID);
 
-            if (brain.isMurderer && config.NPC.Murderers.DespawnInventory || !brain.isMurderer && config.NPC.Scientists.DespawnInventory)
+            if (brain.isMurderer ? config.NPC.Murderers.DespawnInventory : config.NPC.Scientists.DespawnInventory)
             {
                 corpse.Invoke(corpse.SafelyKill, brain.isMurderer ? config.NPC.Murderers.DespawnInventoryTime : config.NPC.Scientists.DespawnInventoryTime);
             }
@@ -2787,15 +2796,27 @@ namespace Oxide.Plugins
 
         void OnEntitySpawned(DroppedItemContainer backpack)
         {
-            if (config.Event.PlayersLootable && !backpack.IsKilled() && backpack.ShortPrefabName == "item_drop_backpack" && EventTerritory(backpack.transform.position))
+            if (backpack.IsKilled() || !EventTerritory(backpack.transform.position))
             {
-                NextTick(() =>
+                return;
+            }
+
+            if (backpack.ShortPrefabName == "item_drop_backpack")
+            {
+                if (!config.Event.PlayersLootable)
+                    return;
+
+                backpack.Invoke(() =>
                 {
                     if (!backpack.IsKilled() && backpack.playerSteamID.IsSteamId())
                     {
                         backpack.playerSteamID = 0;
                     }
-                });
+                }, 0.2f);
+            }
+            else if (backpack.ShortPrefabName == "item_drop" || backpack.ShortPrefabName == "item_drop_buoyant")
+            {
+                backpack.buryLeftoverItems = false;
             }
         }
 
@@ -2900,7 +2921,7 @@ namespace Oxide.Plugins
             {
                 var box = container?.entityOwner as StorageContainer;
 
-                if (!box.IsValid() || !treasureChests.ContainsKey(box.net.ID))
+                if (!box.IsValid() || !treasureChests.TryGetValue(box.net.ID, out var tc))
                     return;
 
                 var looter = item.GetOwnerPlayer();
@@ -2949,13 +2970,25 @@ namespace Oxide.Plugins
 
                         if (config.Rewards.ServerRewards && config.Rewards.Points > 0 && ServerRewards.CanCall())
                         {
-                            if (Convert.ToBoolean(ServerRewards?.Call("AddPoints", looter.userID, (int)config.Rewards.Points)))
+                            if (Convert.ToBoolean(ServerRewards?.Call("AddPoints", (ulong)looter.userID, (int)config.Rewards.Points)))
                             {
                                 Message(looter, "ServerRewardPoints", (int)config.Rewards.Points);
                             }
                         }
 
-                        Interface.CallHook("OnDangerousEventWon", looter);
+                        var boc = config.Rewards.EventCommands;
+                        if (boc.Any())
+                        {
+                            foreach (var target in tc.invaders)
+                            {
+                                ulong ownerid = 0uL;
+                                if (boc.Owner) ownerid = tc.userid.IsSteamId() ? tc.userid : looter.userID;
+                                if (!IsAlly(target, ownerid)) continue;
+                                RunCommands(boc, target, ownerid);
+                            }
+                        }
+
+                        Interface.CallHook("OnDangerousEventWon", looter, tc.invaders);
                     }
 
                     box.SafelyKill();
@@ -2964,6 +2997,25 @@ namespace Oxide.Plugins
                         SubscribeHooks(false);
                 }
             });
+        }
+
+        private void RunCommands(RewardRunCommands boc, ulong userid, ulong ownerid)
+        {
+            if (!boc.Enabled)
+            {
+                return;
+            }
+            foreach (var command in boc.Commands)
+            {
+                if (string.IsNullOrWhiteSpace(command)) continue;
+                if (!CanAssignTo(userid, ownerid > 0 ? ownerid : userid, boc.Owner)) continue;
+                ConsoleSystem.Run(ConsoleSystem.Option.Server, command.Replace("{userid}", userid.ToString()));
+            }
+        }
+
+        private bool CanAssignTo(ulong userid, ulong ownerid, bool only)
+        {
+            return only == false || ownerid == 0uL || userid == ownerid;
         }
 
         private object CanEntityBeTargeted(BasePlayer player, BaseEntity target)
@@ -3000,7 +3052,7 @@ namespace Oxide.Plugins
                 return null;
             }
 
-            if (entity is HumanoidNPC && HasNPC(entity.ToPlayer().userID))
+            if (entity is HumanoidNPC && entity.skinID == 14922525)
             {
                 return true;
             }
@@ -3089,6 +3141,16 @@ namespace Oxide.Plugins
             hitInfo.damageTypes.ScaleAll(0f);
         }
 
+        private object CanPopulateLoot(BaseEntity entity, LootableCorpse corpse)
+        {
+            return corpse != null && corpse.skinID == 14922525 ? true : (object)null;
+        }
+
+        private object ShouldBLPopulate_NPC(ulong playerSteamID)
+        {
+            return playerSteamID >= 624922525 && playerSteamID <= BotIdCounter ? true : (object)null;
+        }
+
         private object OnNpcKits(ulong targetId)
         {
             return HasNPC(targetId) ? true : (object)null;
@@ -3125,13 +3187,32 @@ namespace Oxide.Plugins
         {
             foreach (var x in treasureChests.Values)
             {
-                if ((x.containerPos - target).SqrMagnitude2D() <= x.Radius * x.Radius)
+                if ((x.containerPos - target).sqrMagnitude <= x.Radius * x.Radius)
                 {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        public void SafelyKillNpc(HumanoidNPC npc)
+        {
+            if (npc != null && HumanoidBrains.TryGetValue(npc.userID, out var brain))
+            {
+                if (!brain.AttackEntity.IsKilled())
+                {
+                    brain.AttackEntity.SetHeld(false);
+                }
+                brain.DisableShouldThink();
+            }
+            if (npc != null)
+            {
+                ulong userid = npc.userID;
+                BasePlayer.bots.Remove(npc);
+                npc.SafelyKill();
+                BasePlayer.freeBotIds.Remove(userid);
+            }
         }
 
         private void LoadData()
@@ -3279,7 +3360,7 @@ namespace Oxide.Plugins
                     continue;
                 }
                 var monPos = monument.transform.position;
-                var name = monument.displayPhrase.english.TrimEnd();
+                var name = monument.displayPhrase?.english?.TrimEnd() ?? null;
                 if (string.IsNullOrEmpty(name))
                 {
                     if (monument.name.Contains("cave"))
@@ -3466,6 +3547,11 @@ namespace Oxide.Plugins
                     return;
                 }
 
+                if (config.Event.DestructTimeResetsWhenAttacked && attacker.userID.IsSteamId())
+                {
+                    brain.tc.SetDestructTime();
+                }
+
                 brain.SetTarget(attacker);
             }
         }
@@ -3505,6 +3591,16 @@ namespace Oxide.Plugins
             {
                 if (config.NPC.Enabled)
                 {
+                    if (config.NPC.BlockAlphaLoot)
+                    {
+                        Subscribe(nameof(CanPopulateLoot));
+                    }
+
+                    if (config.NPC.BlockBetterLoot)
+                    {
+                        Subscribe(nameof(ShouldBLPopulate_NPC));
+                    }
+
                     if (config.NPC.BlockNpcKits)
                     {
                         Subscribe(nameof(OnNpcKits));
@@ -3527,6 +3623,8 @@ namespace Oxide.Plugins
             }
             else
             {
+                Unsubscribe(nameof(CanPopulateLoot));
+                Unsubscribe(nameof(ShouldBLPopulate_NPC));
                 Unsubscribe(nameof(OnNpcKits));
                 Unsubscribe(nameof(CanTeleport));
                 Unsubscribe(nameof(canTeleport));
@@ -4005,7 +4103,7 @@ namespace Oxide.Plugins
             chestLoot.AddRange(ChestLoot);
             if (config.BlockPaidContent)
             {
-                chestLoot.RemoveAll(ti => RequiresOwnership(ti.shortname, ti.skin));
+                chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition, ti.skin));
             }
             chest.SpawnLoot(container, chestLoot);
             
@@ -4780,28 +4878,36 @@ namespace Oxide.Plugins
 
         #region Facepunch TOS Compliance
 
-        private readonly Hash<int, string> _dlcItemIds = new();
+        private readonly HashSet<int> _dlcItemIds = new();
         private readonly HashSet<ulong> _ownershipIds = new();
+        private bool _ownershipReady;
 
         private void LoadOwnership()
         {
             if (!config.BlockPaidContent)
             {
+                _ownershipReady = true;
+                return;
+            }
+
+            if ((Steamworks.SteamInventory.Definitions?.Length ?? 0) == 0)
+            {
+                timer.In(3f, LoadOwnership);
                 return;
             }
 
             foreach (var def in ItemManager.GetItemDefinitions())
             {
-                if (RequiresOwnership(def, 0))
+                if (RequiresOwnership(def))
                 {
-                    _dlcItemIds.Add(def.itemid, def.shortname);
+                    _dlcItemIds.Add(def.itemid);
                 }
 
                 if (def.skins != null)
                 {
                     foreach (var sk in def.skins)
                     {
-                        _ownershipIds.Add((ulong)sk.id);
+                        if (sk.id != 0) _ownershipIds.Add((ulong)sk.id);
                     }
                 }
 
@@ -4809,43 +4915,39 @@ namespace Oxide.Plugins
                 {
                     foreach (var sk2 in def.skins2)
                     {
-                        _ownershipIds.Add(sk2.WorkshopId);
+                        if (sk2.WorkshopId != 0) _ownershipIds.Add(sk2.WorkshopId);
                     }
                 }
             }
-        }
 
-        public bool RequiresOwnership(string shortname, ulong skin) => RequiresOwnership(ItemManager.FindItemDefinition(shortname), skin);
+            _ownershipReady = true;
+        }
 
         public bool RequiresOwnership(ItemDefinition def, ulong skin)
         {
             if (!config.BlockPaidContent) return false;
-            switch (def)
-            {
-                case null: return false;
-                case { steamItem: { id: not 0 } }:
-                case { steamDlc: { dlcAppID: not 0 } }:
-                case { Blueprint: { NeedsSteamDLC: true } }:
-                case { Parent: { Blueprint: { NeedsSteamDLC: true } } }:
-                case { isRedirectOf: { Blueprint: { NeedsSteamDLC: true } } }:
-                case { isRedirectOf: not null }:
-                    return true;
-                default:
-                    return RequiresOwnership(def.itemid, skin);
-            }
+            if (skin != 0uL && !_ownershipReady) return true;
+            if (skin != 0uL && _ownershipIds.Contains(skin)) return true;
+            if (def != null && !_ownershipReady) return RequiresOwnership(def);
+            return def != null && _dlcItemIds.Contains(def.itemid);
         }
 
-        public bool RequiresOwnership(int itemId, ulong skin)
+        public bool RequiresOwnership(ItemDefinition def) => def switch
         {
-            if (!config.BlockPaidContent) return false;
-            if (itemId != 0 && _dlcItemIds.ContainsKey(itemId)) return true;
-            return skin != 0uL && _ownershipIds.Contains(skin);
-        }
+            null => false,
+            { steamItem: { id: not 0 } } => true,
+            { steamDlc: { dlcAppID: not 0 } } => true,
+            { Blueprint: { NeedsSteamDLC: true } } => true,
+            { Parent: { Blueprint: { NeedsSteamDLC: true } } } => true,
+            { isRedirectOf: { Blueprint: { NeedsSteamDLC: true } } } => true,
+            { isRedirectOf: not null } => true,
+            _ => false
+        };
 
-        public bool RemoveRequiresOwnership(int itemId, List<ulong> skins)
+        public bool RemoveRequiresOwnership(ItemDefinition def, List<ulong> skins)
         {
             if (!config.BlockPaidContent) return true;
-            return skins.RemoveAll(skin => RequiresOwnership(itemId, skin)) != 0;
+            return skins.RemoveAll(skin => RequiresOwnership(def, skin)) != 0;
         }
 
         #endregion Facepunch TOS Compliance
@@ -5299,6 +5401,12 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Destroy Spheres When Event Starts")]
             public bool DestroySphereOnStart { get; set; } = true;
 
+            [JsonProperty(PropertyName = "Destroy Fires When Event Starts")]
+            public bool DestroyFireOnStart { get; set; } = true;
+
+            [JsonProperty(PropertyName = "Destroy Launchers When Event Starts")]
+            public bool DestroyLauncherOnStart { get; set; } = true;
+
             [JsonProperty(PropertyName = "Player Limit For Event")]
             public int PlayerLimit { get; set; } = 1;
 
@@ -5322,6 +5430,12 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Time To Loot")]
             public float DestructTime { get; set; } = 900f;
+
+            [JsonProperty(PropertyName = "Despawn Timer Resets When Npc Is Attacked By Players")]
+            public bool DestructTimeResetsWhenAttacked { get; set; }
+
+            [JsonProperty(PropertyName = "Despawn Timer Resets When Npc Is Killed By Players")]
+            public bool DestructTimeResetsWhenKilled { get; set; } = true;
         }
 
         public class UIAdvancedAlertSettings
@@ -5812,6 +5926,12 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Block Damage From Players Beyond X Distance (0 = disabled)")]
             public float Range { get; set; } = 0f;
 
+            [JsonProperty(PropertyName = "Block AlphaLoot Plugin")]
+            public bool BlockAlphaLoot;
+
+            [JsonProperty(PropertyName = "Block BetterLoot Plugin")]
+            public bool BlockBetterLoot = true;
+
             [JsonProperty(PropertyName = "Block Npc Kits Plugin")]
             public bool BlockNpcKits { get; set; }
 
@@ -5845,6 +5965,9 @@ namespace Oxide.Plugins
 
         public class RewardSettings
         {
+            [JsonProperty(PropertyName = "Commands To Run When Box Is Looted")]
+            public RewardRunCommands EventCommands = new();
+
             [JsonProperty(PropertyName = "Economics Money")]
             public double Money { get; set; } = 0;
 
@@ -5906,6 +6029,8 @@ namespace Oxide.Plugins
             public float probability { get; set; } = 1f;
             [JsonProperty(PropertyName = "Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<ulong> skins { get; set; } = new();
+            internal ItemDefinition definition => _def ??= ItemManager.FindItemDefinition(shortname);
+            internal ItemDefinition _def;
         }
 
         public class TreasureSettings
@@ -6011,6 +6136,26 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Notify Every X Minutes (Minimum 1)")]
             public float Interval { get; set; } = 3f;
+        }
+
+        public class RewardRunCommands
+        {
+            [JsonProperty(PropertyName = "Commands", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> Commands = new();
+
+            [JsonProperty(PropertyName = "Run Commands For Owner Only")]
+            public bool Owner = true;
+
+            [JsonProperty(PropertyName = "Enabled")]
+            public bool Enabled;
+
+            public bool Any() => Enabled && Commands.Exists(x => !string.IsNullOrWhiteSpace(x));
+
+            public RewardRunCommands()
+            {
+                Commands.Add("inventory.giveto {userid} apple 1");
+                Commands.Add("o.usergroup add {userid} specialgroup");
+            }
         }
 
         public class Configuration
@@ -6184,6 +6329,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
     public static class ExtensionMethods
     {
         internal static Core.Libraries.Permission p;
+        public static PooledList<Item> GetAllItems(this BasePlayer a) { var b = Facepunch.Pool.Get<PooledList<Item>>(); if (a != null && a.inventory != null) { a.inventory.GetAllItems(b); } return b; }
         public static bool All<T>(this IEnumerable<T> a, Func<T, bool> b) { foreach (T c in a) { if (!b(c)) { return false; } } return true; }
         public static T ElementAt<T>(this IEnumerable<T> a, int b) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == 0) { return c.Current; } b--; } } return default(T); }
         public static bool Exists<T>(this IEnumerable<T> a, Func<T, bool> b = null) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == null || b(c.Current)) { return true; } } } return false; }
