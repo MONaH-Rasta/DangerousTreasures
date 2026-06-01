@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.5.0")]
+    [Info("Dangerous Treasures", "nivex", "2.5.1")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -4726,7 +4726,7 @@ namespace Oxide.Plugins
         private void ccmdDangerousTreasures(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
-            var args = arg.Args ?? new string[0];
+            var args = arg.HasArgs() ? arg.Args.ToStringArray() : new string[0];
 
             if (!arg.IsAdmin)
             {
@@ -6329,6 +6329,8 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
     public static class ExtensionMethods
     {
         internal static Core.Libraries.Permission p;
+        public static string[] ToStringArray(this string[] args) => args;
+        public static string[] ToStringArray(this StringView[] args) { if (args == null || args.Length == 0) return Array.Empty<string>(); string[] array = new string[args.Length]; for (int i = 0; i < args.Length; i++) array[i] = args[i].ToString(); return array; }
         public static PooledList<Item> GetAllItems(this BasePlayer a) { var b = Facepunch.Pool.Get<PooledList<Item>>(); if (a != null && a.inventory != null) { a.inventory.GetAllItems(b); } return b; }
         public static bool All<T>(this IEnumerable<T> a, Func<T, bool> b) { foreach (T c in a) { if (!b(c)) { return false; } } return true; }
         public static T ElementAt<T>(this IEnumerable<T> a, int b) { using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (b == 0) { return c.Current; } b--; } } return default(T); }
