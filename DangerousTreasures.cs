@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "2.5.1")]
+    [Info("Dangerous Treasures", "nivex", "2.5.2")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -149,7 +149,7 @@ namespace Oxide.Plugins
 
             private void RemoveOwnershipPass()
             {
-                using var itemList = Facepunch.Pool.Get<PooledList<Item>>(); 
+                using var itemList = Facepunch.Pool.Get<PooledList<Item>>();
                 inventory.GetAllItems(itemList);
                 for (int i = itemList.Count - 1; i >= 0; i--)
                 {
@@ -1479,7 +1479,7 @@ namespace Oxide.Plugins
                     using var skins = Facepunch.Pool.Get<PooledList<ulong>>();
                     skins.AddRange(lootItem.skins);
                     Instance.RemoveRequiresOwnership(definition, skins);
-                    
+
                     ulong skin = skins.Count > 0 ? skins.GetRandom() : !Instance.RequiresOwnership(definition, lootItem.skin) ? lootItem.skin : 0;
                     Item item = ItemManager.CreateByName(definition.shortname, amount, skin);
 
@@ -1631,7 +1631,7 @@ namespace Oxide.Plugins
             {
                 if (col == null || col.ObjectName() == "ZoneManager")
                     return;
-                
+
                 var player = col.ToBaseEntity() as BasePlayer;
 
                 if (player == null || !player.IsHuman())
@@ -1835,8 +1835,8 @@ namespace Oxide.Plugins
                 go.name = prefabName;
 
                 ScientistBrain scientistBrain = go.GetComponent<ScientistBrain>();
-                ScientistNPC scientistNpc = go.GetComponent<ScientistNPC>(); 
-                
+                ScientistNPC scientistNpc = go.GetComponent<ScientistNPC>();
+
                 npc = go.AddComponent<HumanoidNPC>();
 
                 humanoidBrain = go.AddComponent<HumanoidBrain>();
@@ -2460,10 +2460,10 @@ namespace Oxide.Plugins
                     if (config.Event.DestroySphereOnStart)
                         DestroySphere();
 
-                    if (config.Event.DestroyFireOnStart) 
+                    if (config.Event.DestroyFireOnStart)
                         DestroyFire();
 
-                    if (config.Event.DestroyLauncherOnStart) 
+                    if (config.Event.DestroyLauncherOnStart)
                         DestroyLauncher();
 
                     SetDestructTime();
@@ -2496,8 +2496,11 @@ namespace Oxide.Plugins
                     }
                 }
 
-                container.SetFlag(BaseEntity.Flags.Locked, false);
-                container.SetFlag(BaseEntity.Flags.OnFire, false);
+                using (var update = container.StartSetFlags(BaseEntity.FlagsUpdateMode.SendNetworkUpdate))
+                {
+                    update.Set(BaseEntity.Flags.Locked, false);
+                    update.Set(BaseEntity.Flags.OnFire, false);
+                }
             }
 
             public void SetDestructTime()
@@ -4091,8 +4094,12 @@ namespace Oxide.Plugins
             container.dropsLoot = false;
             container.enableSaving = false;
             container.Spawn();
-            container.SetFlag(BaseEntity.Flags.OnFire, true);
-            container.SetFlag(BaseEntity.Flags.Locked, true);
+
+            using (var update = container.StartSetFlags(BaseEntity.FlagsUpdateMode.SendNetworkUpdate))
+            {
+                update.Set(BaseEntity.Flags.Locked, true);
+                update.Set(BaseEntity.Flags.OnFire, true);
+            }
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
             chest.go = chest.gameObject;
@@ -4106,7 +4113,7 @@ namespace Oxide.Plugins
                 chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition, ti.skin));
             }
             chest.SpawnLoot(container, chestLoot);
-            
+
             if (config.Skins.PresetSkin != 0uL)
             {
                 container.skinID = config.Skins.PresetSkin;
@@ -4270,8 +4277,11 @@ namespace Oxide.Plugins
                 return;
             }
 
-            container.SetFlag(BaseEntity.Flags.Locked, true);
-            container.SetFlag(BaseEntity.Flags.OnFire, true);
+            using (var update = container.StartSetFlags(BaseEntity.FlagsUpdateMode.SendNetworkUpdate))
+            {
+                update.Set(BaseEntity.Flags.Locked, true);
+                update.Set(BaseEntity.Flags.OnFire, true);
+            }
 
             var chest = container.gameObject.AddComponent<TreasureChest>();
             chest.markerCreated = true;
@@ -6352,7 +6362,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static bool IsKilled(this BaseNetworkable a) => a == null || a.IsDestroyed || !a.IsFullySpawned();
         public static bool IsNull<T>(this T a) where T : class { return a == null; }
         public static bool IsNull(this BasePlayer a) => a == null || a.IsDestroyed;
-        public static bool IsNullOrEmpty<T>(this IReadOnlyCollection<T> c) => c == null || c.Count == 0; 
+        public static bool IsNullOrEmpty<T>(this IReadOnlyCollection<T> c) => c == null || c.Count == 0;
         public static bool IsReallyValid(this BaseNetworkable a) { return !(a == null || a.IsDestroyed || !a.IsFullySpawned() || a.net == null); }
         public static void SafelyKill(this BaseNetworkable a) { if (a.IsKilled()) { return; } a.Kill(BaseNetworkable.DestroyMode.None); }
         public static bool CanCall(this Plugin o) { return o != null && o.IsLoaded; }
