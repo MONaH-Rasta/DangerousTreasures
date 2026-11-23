@@ -21,7 +21,7 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "3.0.0")]
+    [Info("Dangerous Treasures", "nivex", "3.0.1")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
@@ -231,7 +231,6 @@ namespace Oxide.Plugins
 
             private bool RemoveOwnershipPass()
             {
-                if (!Instance.config.BlockPaidContent) return true;
                 using var itemList = Facepunch.Pool.Get<PooledList<Item>>();
                 inventory.GetAllItems(itemList);
                 bool hasItems = false;
@@ -1666,16 +1665,6 @@ namespace Oxide.Plugins
 
             private Dictionary<string, ulong> skinIds { get; set; } = new();
 
-            private bool IsBlacklistedSkin(ItemDefinition def, int num)
-            {
-                if (Instance.RequiresOwnership(def, (ulong)num)) return true;
-                var skinId = ItemDefinition.FindSkin(def.isRedirectOf?.itemid ?? def.itemid, num);
-                var dirSkin = def.isRedirectOf == null ? def.skins.FirstOrDefault(x => (ulong)x.id == skinId) : def.isRedirectOf.skins.FirstOrDefault(x => (ulong)x.id == skinId);
-                var itemSkin = (dirSkin.id == 0) ? null : (dirSkin.invItem as ItemSkin);
-
-                return itemSkin?.Redirect != null || def.isRedirectOf != null;
-            }
-
             public ulong GetItemSkin(ItemDefinition def, ulong defaultSkin, bool unique)
             {
                 ulong skin = defaultSkin;
@@ -1717,48 +1706,7 @@ namespace Oxide.Plugins
 
             public SkinInfo GetItemSkins(ItemDefinition def)
             {
-                if (!Instance.Skins.TryGetValue(def.shortname, out var si))
-                {
-                    Instance.Skins[def.shortname] = si = new();
-
-                    if (config.BlockPaidContent)
-                    {
-                        return si;
-                    }
-
-                    foreach (var skin in def.skins)
-                    {
-                        if (IsBlacklistedSkin(def, skin.id))
-                        {
-                            continue;
-                        }
-
-                        var id = Convert.ToUInt64(skin.id);
-
-                        si.skins.Add(id);
-                        si.allSkins.Add(id);
-                    }
-
-                    if (def.skins2 == null)
-                    {
-                        return si;
-                    }
-
-                    foreach (var skin in def.skins2)
-                    {
-                        if (IsBlacklistedSkin(def, (int)skin.WorkshopId))
-                        {
-                            continue;
-                        }
-
-                        if (!si.workshopSkins.Contains(skin.WorkshopId))
-                        {
-                            si.workshopSkins.Add(skin.WorkshopId);
-                            si.allSkins.Add(skin.WorkshopId);
-                        }
-                    }
-                }
-
+                if (!Instance.Skins.TryGetValue(def.shortname, out var si)) Instance.Skins[def.shortname] = si = new();
                 return si;
             }
 
@@ -2021,6 +1969,7 @@ namespace Oxide.Plugins
 
                 int scientistCount = ScientistBrain.Count;
                 CopySerializableFields(scientistNpc, npc);
+                npc.prefabID = scientistNpc.prefabID;
                 DestroyImmediate(scientistBrain, true);
                 DestroyImmediate(scientistNpc, true);
                 ScientistBrain.Count = scientistCount;
@@ -4342,10 +4291,7 @@ namespace Oxide.Plugins
             var chestLoot = new List<LootItem>();
             var lootList = ChestLoot(chest.Options);
             if (lootList != null) chestLoot.AddRange(lootList);
-            if (config.BlockPaidContent)
-            {
-                chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition, ti.skin));
-            }
+            chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition, ti.skin));
             chest.SpawnLoot(container, chestLoot);
 
             if (config.Skins.PresetSkin != 0uL)
@@ -4526,12 +4472,12 @@ namespace Oxide.Plugins
             return BasePlayer.activePlayerList.Count(x => name.Contains('.') ? !permission.UserHasPermission(x.UserIDString, name) : !permission.UserHasGroup(x.UserIDString, name));
         }
 
-        private int GetEventCount(int level)
+        private int GetEventCount(int? level = null)
         {
             int count = 0;
             foreach (var chest in treasureChests.Values)
             {
-                if (chest != null && !chest.killed && chest.Options.Level == level) count++;
+                if (chest != null && !chest.killed && (!level.HasValue || chest.Options.Level == level.Value)) count++;
             }
             return count;
         }
@@ -4550,21 +4496,33 @@ namespace Oxide.Plugins
             double stamp = Facepunch.Math.Epoch.Current;
             double now = Time.realtimeSinceStartupAsDouble;
             int playerCount = -1;
+            bool available = config.Settings.MaxEvents == 0 || config.Settings.MaxEvents > 0 && GetEventCount() < config.Settings.MaxEvents;
+            using var levels = Pool.Get<PooledList<DifficultyLevel>>();
             foreach (var options in config.Levels)
             {
-                if (!options.Event.Automated) continue;
+                if (!options.Event.Automated || options.Event.MaxAutomated < 0 || config.Settings.MaxEvents < 0) continue;
                 if (!data.SecondsUntilEvent.TryGetValue(options.Level, out double next) || next == double.MinValue)
                 {
                     ScheduleNextEvent(options, stamp);
                     continue;
                 }
-                if (next > stamp || eventRetries.TryGetValue(options.Level, out double retry) && retry > now) continue;
-                if (GetEventCount(options.Level) >= options.Event.Max) continue;
+                if (!available || next > stamp || eventRetries.TryGetValue(options.Level, out double retry) && retry > now) continue;
+                if (options.Event.MaxAutomated > 0 && GetEventCount(options.Level) >= options.Event.MaxAutomated) continue;
                 if (playerCount < 0) playerCount = GetPlayerCount();
                 if (playerCount < options.Event.PlayerLimit) continue;
+                levels.Add(options);
+            }
+            while (levels.Count > 0)
+            {
+                if (config.Settings.MaxEvents > 0 && GetEventCount() >= config.Settings.MaxEvents) break;
+                int index = UnityEngine.Random.Range(0, levels.Count);
+                var options = levels[index];
+                levels.RemoveAt(index);
+                if (options.Event.MaxAutomated > 0 && GetEventCount(options.Level) >= options.Event.MaxAutomated) continue;
                 var chest = TryOpenEvent(options);
                 int count = GetEventCount(options.Level);
-                if (chest != null && (!options.Event.SpawnMax || count >= options.Event.Max))
+                bool full = options.Event.MaxAutomated > 0 && count >= options.Event.MaxAutomated || config.Settings.MaxEvents > 0 && GetEventCount() >= config.Settings.MaxEvents;
+                if (chest != null && (!options.Event.SpawnMax || full || options.Event.MaxAutomated == 0 && config.Settings.MaxEvents == 0))
                 {
                     if (options.Event.SpawnMax && count > 1) AnnounceEventSpawn();
                     ScheduleNextEvent(options, stamp);
@@ -5222,12 +5180,6 @@ namespace Oxide.Plugins
 
         private void LoadOwnership()
         {
-            if (!config.BlockPaidContent)
-            {
-                _ownershipReady = true;
-                return;
-            }
-
             if ((Steamworks.SteamInventory.Definitions?.Length ?? 0) == 0)
             {
                 timer.In(3f, LoadOwnership);
@@ -5263,28 +5215,29 @@ namespace Oxide.Plugins
 
         public bool RequiresOwnership(ItemDefinition def, ulong skin)
         {
-            if (!config.BlockPaidContent) return false;
             if (skin != 0uL && !_ownershipReady) return true;
             if (skin != 0uL && _ownershipIds.Contains(skin)) return true;
             if (def != null && !_ownershipReady) return RequiresOwnership(def);
             return def != null && _dlcItemIds.Contains(def.itemid);
         }
 
-        public bool RequiresOwnership(ItemDefinition def) => def switch
+        public bool RequiresOwnership(ItemDefinition def)
         {
-            null => false,
-            { steamItem: { id: not 0 } } => true,
-            { steamDlc: { dlcAppID: not 0 } } => true,
-            { Blueprint: { NeedsSteamDLC: true } } => true,
-            { Parent: { Blueprint: { NeedsSteamDLC: true } } } => true,
-            { isRedirectOf: { Blueprint: { NeedsSteamDLC: true } } } => true,
-            { isRedirectOf: not null } => true,
-            _ => false
-        };
+            if (def == null) return false;
+            var parent = def.Parent;
+            return def switch
+            {
+                _ when def.steamItem != null && def.steamItem.id != 0 => true,
+                _ when def.steamDlc != null && def.steamDlc.dlcAppID != 0 => true,
+                _ when def.Blueprint != null && def.steamDlc != null => true,
+                _ when parent != null && parent.Blueprint != null && parent.steamDlc != null => true,
+                _ when def.isRedirectOf != null => true,
+                _ => false
+            };
+        }
 
         public bool RemoveRequiresOwnership(ItemDefinition def, List<ulong> skins)
         {
-            if (!config.BlockPaidContent) return true;
             return skins.RemoveAll(skin => RequiresOwnership(def, skin)) != 0;
         }
 
@@ -5613,6 +5566,9 @@ namespace Oxide.Plugins
 
         public class PluginSettings
         {
+            [JsonProperty(PropertyName = "Max Events (0 = infinite, -1 = disabled)")]
+            public int MaxEvents;
+
             [JsonProperty(PropertyName = "Permission Name")]
             public string PermName { get; set; } = "dangeroustreasures.use";
 
@@ -5749,6 +5705,11 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Marker Event Name")]
             public string MarkerName { get; set; } = "Dangerous Treasures Event";
+
+            private int? maxAutomated;
+
+            [JsonProperty(PropertyName = "Max Amount Allowed To Automatically Spawn Per Difficulty (0 = infinite, -1 = disabled)")]
+            public int MaxAutomated { get => maxAutomated ?? (Max > 0 ? Max : -1); set => maxAutomated = value; }
 
             [JsonProperty(PropertyName = "Max Manual Events")]
             public int Max { get; set; } = 1;
@@ -5943,6 +5904,7 @@ namespace Oxide.Plugins
 
         public class MonumentSettings
         {
+
             [JsonProperty(PropertyName = "NPC Blacklisted Monuments", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public Dictionary<string, bool> NPCBlacklist { get; set; } = new()
             {
@@ -6719,14 +6681,14 @@ namespace Oxide.Plugins
         public static bool Compare(Vector3 left, Vector3 right) => (left - right).sqrMagnitude < 0.001f;
         private static int FindReplacement(HashSet<int> reserved)
         {
-            int candidate = 0;
+            int replacement = 0;
 
-            while (reserved.Contains(candidate))
+            while (reserved.Contains(replacement))
             {
-                candidate++;
+                replacement++;
             }
 
-            return candidate;
+            return replacement;
         }
 
         public class Configuration
@@ -6777,9 +6739,6 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Unlooted Announcements")]
             public UnlootedAnnouncementSettings UnlootedAnnouncements = new();
-
-            [JsonProperty(PropertyName = "Block paid and restricted content to comply with Facepunch TOS")]
-            public bool BlockPaidContent = true;
 
             public DifficultyLevel GetLevel(int level)
             {
@@ -6916,6 +6875,7 @@ namespace Oxide.Plugins
                 config.Monuments.NPCBlacklist = previousNpcBlacklistedMonuments;
                 previousNpcBlacklistedMonuments = null;
             }
+            config.Settings.MaxEvents = Math.Max(-1, config.Settings.MaxEvents);
             if (config.Rocket.Speed > 0.1f) config.Rocket.Speed = 0.1f;
             if (config.Monuments.Chance < 0) config.Monuments.Chance = 0f;
             if (config.Monuments.Chance > 1f) config.Monuments.Chance /= 100f;
@@ -6974,6 +6934,7 @@ namespace Oxide.Plugins
                     options.NPC.Scientists = previousScientistSettings.Clone();
                     imports.Add("Successfully imported Scientist settings.");
                 }
+                options.Event.MaxAutomated = Math.Max(-1, options.Event.MaxAutomated);
                 if (options.Event.Radius < 10f) options.Event.Radius = 10f;
                 if (options.Event.Radius > 150f) options.Event.Radius = 150f;
                 if (options.MissileLauncher.Distance < 1f) options.MissileLauncher.Distance = 15f;
