@@ -13,6 +13,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
@@ -21,13 +22,13 @@ using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
-    [Info("Dangerous Treasures", "nivex", "3.0.1")]
+    [Info("Dangerous Treasures", "nivex", "3.0.2")]
     [Description("Event with treasure chests.")]
     internal class DangerousTreasures : RustPlugin
     {
         [PluginReference] Plugin ZoneManager, Economics, ServerRewards, GUIAnnouncements, MarkerManager, Kits, Duelist, RaidableBases, AbandonedBases, Notify, AdvancedAlerts, Clans, Friends;
 
-        private new const string Name = "Dangerous Treasures";
+        private const string DataFileName = "Dangerous Treasures";
         private bool wipeChestsSeed;
         private StoredData data = new();
         private List<int> BlockedLayers = new() { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
@@ -38,7 +39,7 @@ namespace Oxide.Plugins
         private Dictionary<NetworkableId, TreasureChest> treasureChests = new();
         private Dictionary<NetworkableId, string> looters = new();
         private Dictionary<string, ItemDefinition> _definitions = new();
-        private Dictionary<string, SkinInfo> Skins = new();
+        private Dictionary<string, HashSet<ulong>> Skins = new();
         private List<ulong> newmanProtections = new();
         private List<ulong> indestructibleWarnings = new(); // indestructible messages limited to once every 10 seconds
         private List<ulong> drawGrants = new(); // limit draw to once every 15 seconds by default
@@ -68,14 +69,6 @@ namespace Oxide.Plugins
             public Vector3 Size;
             public float Distance;
             public OBB OBB;
-        }
-
-        public class SkinInfo
-        {
-            public List<ulong> skins = new();
-            public List<ulong> workshopSkins = new();
-            public List<ulong> importedSkins = new();
-            public List<ulong> allSkins = new();
         }
 
         private class PlayerInfo
@@ -214,6 +207,10 @@ namespace Oxide.Plugins
                         }
                     }
                 }
+                foreach (ItemContainer container in corpse.containers)
+                {
+                    Instance.RemoveRestrictedItems(container);
+                }
                 CheckCorpse(corpse);
                 return corpse;
             }
@@ -229,25 +226,7 @@ namespace Oxide.Plugins
                 if (Brain != null) UnityEngine.Object.Destroy(Brain);
             }
 
-            private bool RemoveOwnershipPass()
-            {
-                using var itemList = Facepunch.Pool.Get<PooledList<Item>>();
-                inventory.GetAllItems(itemList);
-                bool hasItems = false;
-                for (int i = itemList.Count - 1; i >= 0; i--)
-                {
-                    Item item = itemList[i];
-                    if (!Instance.RequiresOwnership(item.info, item.skin))
-                    {
-                        hasItems = true;
-                        continue;
-                    }
-                    item.GetHeldEntity().SafelyKill();
-                    item.RemoveFromContainer();
-                    item.Remove(0f);
-                }
-                return hasItems;
-            }
+            private bool RemoveOwnershipPass() => Instance.RemoveRestrictedItems(inventory);
         }
 
         public class HumanoidBrain : ScientistBrain
@@ -1577,25 +1556,23 @@ namespace Oxide.Plugins
 
                 while (j++ < container.inventory.capacity && loot.Count > 0)
                 {
-                    var lootItem = loot.GetRandom();
+                    var ti = loot.GetRandom();
 
-                    loot.Remove(lootItem);
+                    loot.Remove(ti);
 
-                    if (UnityEngine.Random.value > lootItem.probability)
+                    if (UnityEngine.Random.value > ti.probability)
                     {
                         continue;
                     }
 
-                    var definition = lootItem.definition;
-
+                    var definition = ti.definition;
                     if (definition == null)
                     {
-                        Instance.PrintError("Invalid shortname in config: {0}", lootItem.shortname);
+                        Instance.PrintError("Invalid shortname in config: {0}", ti.shortname);
                         continue;
                     }
 
-                    int amount = UnityEngine.Random.Range(lootItem.amountMin, lootItem.amount + 1);
-
+                    int amount = UnityEngine.Random.Range(ti.amountMin, ti.amount + 1);
                     if (amount <= 0)
                     {
                         j--;
@@ -1607,12 +1584,25 @@ namespace Oxide.Plugins
                         amount = 1;
                     }
 
+                    Item item = ItemManager.CreateByItemID(definition.itemid, amount, 0uL);
+                    if (item == null)
+                    {
+                        j--;
+                        continue;
+                    }
+
+                    bool identical = item.MaxStackable() > 1 ? config.Skins.Stackable : config.Skins.NonStackable;
                     using var skins = Facepunch.Pool.Get<PooledList<ulong>>();
-                    skins.AddRange(lootItem.skins);
+                    skins.AddRange(ti.skins);
                     Instance.RemoveRequiresOwnership(definition, skins);
 
-                    ulong skin = skins.Count > 0 ? skins.GetRandom() : !Instance.RequiresOwnership(definition, lootItem.skin) ? lootItem.skin : 0;
-                    Item item = ItemManager.CreateByItemID(definition.itemid, amount, skin);
+                    if (skins.Count > 0)
+                    {
+                        if (!identical || !skinIds.TryGetValue(definition.shortname, out ulong skin) || !skins.Contains(skin)) skin = skins.GetRandom();
+                        if (identical) skinIds[definition.shortname] = skin;
+                        item.skin = skin;
+                    }
+                    else item.skin = !Instance.RequiresOwnership(definition, ti.skin) ? ti.skin : 0uL;
 
                     if (item.info.stackable > 1 && !item.hasCondition)
                     {
@@ -1621,32 +1611,38 @@ namespace Oxide.Plugins
 
                     if (item.hasCondition)
                     {
-                        item.condition = lootItem.condition * item.info.condition.max;
+                        item.condition = ti.condition * item.info.condition.max;
                     }
 
-                    if (Options.Treasure.RandomSkins && skin == 0)
+                    if (Options.Treasure.ImportedWorkshop && skins.Count == 0 && item.skin == 0uL)
                     {
-                        item.skin = GetItemSkin(definition, lootItem.skin, false);
+                        item.skin = GetItemSkin(definition, 0uL, identical, false);
                     }
 
-                    if (skin != 0 && item.GetHeldEntity())
+                    if (item.skin != 0)
                     {
-                        item.GetHeldEntity().skinID = skin;
+                        var held = item.GetHeldEntity();
+
+                        if (held.IsValid())
+                        {
+                            held.skinID = item.skin;
+                            held.SendNetworkUpdate();
+                        }
                     }
 
-                    if (!string.IsNullOrEmpty(lootItem.name))
+                    if (!string.IsNullOrEmpty(ti.name))
                     {
-                        item.name = lootItem.name;
+                        item.name = ti.name;
                     }
 
-                    if (!string.IsNullOrEmpty(lootItem.text) && !BuildingMaterials.Contains(lootItem.shortname))
+                    if (!string.IsNullOrEmpty(ti.text) && !BuildingMaterials.Contains(ti.shortname))
                     {
-                        item.text = lootItem.text;
+                        item.text = ti.text;
                     }
 
-                    if (lootItem.slots != null)
+                    if (ti.slots != null)
                     {
-                        lootItem.slots.TryAdd(item);
+                        ti.slots.TryAdd(item);
                     }
 
                     item.MarkDirty();
@@ -1664,49 +1660,61 @@ namespace Oxide.Plugins
             };
 
             private Dictionary<string, ulong> skinIds { get; set; } = new();
+            private Dictionary<string, ulong> npcSkinIds = new();
 
-            public ulong GetItemSkin(ItemDefinition def, ulong defaultSkin, bool unique)
+            public ulong GetItemSkin(ItemDefinition def, ulong defaultSkin, bool identical, bool npc)
             {
-                ulong skin = defaultSkin;
+                if (def == null || Instance.RequiresOwnership(def)) return 0uL;
+                if (defaultSkin != 0uL && !Instance.RequiresOwnership(def, defaultSkin)) return defaultSkin;
+                if (!config.Skins.ImportedWorkshop || def.shortname is "explosive.satchel" or "grenade.f1") return 0uL;
 
-                if (def.shortname != "explosive.satchel" && def.shortname != "grenade.f1")
-                {
-                    if (!skinIds.TryGetValue(def.shortname, out skin)) // apply same skin once randomly chosen so items with skins can stack properly
-                    {
-                        skin = defaultSkin;
-                    }
+                ulong skin = 0uL;
+                Dictionary<string, ulong> skins = npc ? npcSkinIds : skinIds;
+                if (identical && skins.TryGetValue(def.shortname, out skin)) return skin;
 
-                    if (!unique || skin == 0)
-                    {
-                        var si = GetItemSkins(def);
-                        var random = new List<ulong>();
-
-                        if ((def.shortname == "box.wooden.large" && config.Skins.RandomWorkshopSkins) || (def.shortname != "box.wooden.large" && Options.Treasure.RandomWorkshopSkins))
-                        {
-                            if (si.workshopSkins.Count > 0)
-                            {
-                                random.Add(si.workshopSkins.GetRandom());
-                            }
-                        }
-
-                        if (config.Skins.RandomSkins && si.skins.Count > 0)
-                        {
-                            random.Add(si.skins.GetRandom());
-                        }
-
-                        if (random.Count != 0)
-                        {
-                            skinIds[def.shortname] = skin = random.GetRandom();
-                        }
-                    }
-                }
-
+                var available = GetItemSkins(def);
+                if (available.Count == 0) return 0uL;
+                skin = available.GetRandom();
+                if (identical) skins[def.shortname] = skin;
                 return skin;
             }
 
-            public SkinInfo GetItemSkins(ItemDefinition def)
+            public ulong GetChestSkin(string shortname)
             {
-                if (!Instance.Skins.TryGetValue(def.shortname, out var si)) Instance.Skins[def.shortname] = si = new();
+                using var choices = Facepunch.Pool.Get<PooledList<ulong>>();
+                if (Instance.ImportedWorkshopSkins.TryGetValue(shortname, out var imported) && imported != null)
+                {
+                    foreach (ulong skin in imported) if (!choices.Contains(skin)) choices.Add(skin);
+                }
+                return choices.Count > 0 ? choices.GetRandom() : 0uL;
+            }
+
+            private bool IsBlacklistedSkin(ItemDefinition def, int num)
+            {
+                var skinId = ItemDefinition.FindSkin(def.isRedirectOf?.itemid ?? def.itemid, num);
+                var dirSkin = def.isRedirectOf == null ? def.skins.FirstOrDefault(x => (ulong)x.id == skinId) : def.isRedirectOf.skins.FirstOrDefault(x => (ulong)x.id == skinId);
+                var itemSkin = (dirSkin.id == 0) ? null : (dirSkin.invItem as ItemSkin);
+                return itemSkin?.Redirect != null || def.isRedirectOf != null;
+            }
+
+            public HashSet<ulong> GetItemSkins(ItemDefinition def)
+            {
+                if (!Instance.Skins.TryGetValue(def.shortname, out var si))
+                {
+                    Instance.Skins[def.shortname] = si = new();
+
+                    if (Instance.ImportedWorkshopSkins.TryGetValue(def.shortname, out var value) && !value.IsNullOrEmpty())
+                    {
+                        foreach (var skin in value)
+                        {
+                            if (skin != 0uL && (IsBlacklistedSkin(def, (int)skin) || Instance.RequiresOwnership(def, skin)))
+                            {
+                                continue;
+                            }
+                            si.Add(skin);
+                        }
+                    }
+                }
                 return si;
             }
 
@@ -1969,7 +1977,7 @@ namespace Oxide.Plugins
 
                 int scientistCount = ScientistBrain.Count;
                 CopySerializableFields(scientistNpc, npc);
-                npc.prefabID = scientistNpc.prefabID;
+                if (npc != null) npc.prefabID = scientistNpc.prefabID;
                 DestroyImmediate(scientistBrain, true);
                 DestroyImmediate(scientistNpc, true);
                 ScientistBrain.Count = scientistCount;
@@ -2134,7 +2142,7 @@ namespace Oxide.Plugins
                 ulong skin = 0uL;
                 if (config.Skins.Npcs)
                 {
-                    skin = GetItemSkin(def, 0uL, config.Skins.UniqueNpcs);
+                    skin = GetItemSkin(def, 0uL, config.Skins.UniqueNpcs, true);
                 }
 
                 source.Add(new()
@@ -2763,6 +2771,7 @@ namespace Oxide.Plugins
             BlockZoneManagerZones(true);
             InitializeMonuments();
             InitializeSkins();
+            LoadImportedSkins();
             timer.Repeat(Mathf.Clamp(config.EventMessages.Interval, 1f, 60f), 0, CheckNotifications);
             LoadOwnership();
             InitializeArmorSlots();
@@ -3323,7 +3332,7 @@ namespace Oxide.Plugins
 
         private void LoadData()
         {
-            try { data = Interface.Oxide.DataFileSystem.ReadObject<StoredData>(Name); } catch { }
+            try { data = Interface.Oxide.DataFileSystem.ReadObject<StoredData>(DataFileName); } catch { }
             data ??= new();
             data.Players ??= new();
             data.SecondsUntilEvent ??= new();
@@ -3700,11 +3709,11 @@ namespace Oxide.Plugins
             return attackEntity is BaseMelee;
         }
 
-        private void SaveData() => Interface.Oxide.DataFileSystem.WriteObject(Name, data);
+        private void SaveData() => Interface.Oxide.DataFileSystem.WriteObject(DataFileName, data);
 
         protected new static void Puts(string format, params object[] args)
         {
-            Interface.Oxide.LogInfo("[{0}] {1}", Name, (args.Length != 0) ? string.Format(format, args) : format);
+            Interface.Oxide.LogInfo("[{0}] {1}", nameof(DangerousTreasures), (args.Length != 0) ? string.Format(format, args) : format);
         }
 
         void SubscribeHooks(bool flag)
@@ -4291,23 +4300,13 @@ namespace Oxide.Plugins
             var chestLoot = new List<LootItem>();
             var lootList = ChestLoot(chest.Options);
             if (lootList != null) chestLoot.AddRange(lootList);
-            chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition, ti.skin));
+            chestLoot.RemoveAll(ti => RequiresOwnership(ti.definition));
             chest.SpawnLoot(container, chestLoot);
 
-            if (config.Skins.PresetSkin != 0uL)
+            ulong chestSkin = config.Skins.PresetSkin != 0uL ? config.Skins.PresetSkin : config.Skins.Custom.Count > 0 ? config.Skins.Custom.GetRandom() : config.Skins.ImportedWorkshop ? chest.GetChestSkin("box.wooden.large") : 0uL;
+            if (chestSkin != 0uL)
             {
-                container.skinID = config.Skins.PresetSkin;
-            }
-            else if (config.Skins.Custom.Count > 0)
-            {
-                container.skinID = config.Skins.Custom.GetRandom();
-                container.SendNetworkUpdate();
-            }
-            else if (config.Skins.RandomSkins)
-            {
-                var skin = chest.GetItemSkin(ItemManager.FindItemDefinition("box.wooden.large"), 0, false);
-
-                container.skinID = skin;
+                container.skinID = chestSkin;
                 container.SendNetworkUpdate();
             }
 
@@ -4346,9 +4345,9 @@ namespace Oxide.Plugins
                     Message(target, "Barrage", config.Rocket.Amount);
                 }
 
-                if (chest.Options.Event.DrawTreasureIfNearby && chest.Options.Event.AutoDrawDistance > 0f && distance <= chest.Options.Event.AutoDrawDistance)
+                if (chest.Options.Event.DrawTreasureIfNearby && chest.Options.Event.AutoDrawDistance > 0f && distance <= chest.Options.Event.AutoDrawDistance && !drawGrants.Contains(target.userID))
                 {
-                    DrawText(target, container.transform.position, msg("Treasure Chest", target.UserIDString, distance), options.Event.DrawTime, options.Event.GrantDraw);
+                    DrawText(target, container.transform.position, msg("Treasure Chest", target.UserIDString, distance), options.Event.DrawTime);
                 }
             }
 
@@ -4388,6 +4387,7 @@ namespace Oxide.Plugins
             foreach (var target in BasePlayer.activePlayerList)
             {
                 if (config.EventMessages.Opened) Player.Message(target, msg("OpenedX", target.UserIDString, config.Settings.DistanceChatCommand));
+                bool canDraw = !drawGrants.Contains(target.userID);
                 foreach (var chest in treasureChests.Values)
                 {
                     var options = chest.Options;
@@ -4401,9 +4401,9 @@ namespace Oxide.Plugins
                         string text = msg2("Opened", target.UserIDString, posStr, unlockStr, distance, config.Settings.DistanceChatCommand);
                         GUIAnnouncements.Call("CreateAnnouncement", text, config.GUIAnnouncement.TintColor, config.GUIAnnouncement.TextColor, target);
                     }
-                    if (options.Event.DrawTreasureIfNearby && options.Event.AutoDrawDistance > 0f && distance <= options.Event.AutoDrawDistance)
+                    if (canDraw && options.Event.DrawTreasureIfNearby && options.Event.AutoDrawDistance > 0f && distance <= options.Event.AutoDrawDistance)
                     {
-                        DrawText(target, chest.containerPos, msg2("Treasure Chest", target.UserIDString, distance), options.Event.DrawTime, options.Event.GrantDraw);
+                        DrawText(target, chest.containerPos, msg2("Treasure Chest", target.UserIDString, distance), options.Event.DrawTime);
                     }
                 }
                 if (config.Rocket.Enabled && config.EventMessages.Barrage) Message(target, "Barrage", config.Rocket.Amount);
@@ -4600,17 +4600,22 @@ namespace Oxide.Plugins
 
             ladder.Sort((x, y) => y.Value.CompareTo(x.Value));
 
-            foreach (var kvp in ladder.Take(config.RankedLadder.Amount))
-            {
-                var userid = kvp.Key;
+            int count = 0;
 
+            foreach (var kvp in ladder)
+            {
+                if (count >= config.RankedLadder.Amount)
+                {
+                    break;
+                }
+
+                var userid = kvp.Key;
                 if (permission.UserHasPermission(userid, "dangeroustreasures.notitle"))
                 {
                     continue;
                 }
 
                 var target = covalence.Players.FindPlayerById(userid);
-
                 if (target != null && target.IsBanned)
                 {
                     continue;
@@ -4618,6 +4623,7 @@ namespace Oxide.Plugins
 
                 permission.GrantUserPermission(userid, config.RankedLadder.Permission, this);
                 permission.AddUserGroup(userid, config.RankedLadder.Group);
+                count++;
 
                 LogToFile("treasurehunters", DateTime.Now.ToString() + " : " + msg("Log Stolen", null, target?.Name ?? userid, userid, kvp.Value), this, true);
                 Puts(_("Log Granted", null, target?.Name ?? userid, userid, config.RankedLadder.Permission, config.RankedLadder.Group));
@@ -4629,48 +4635,19 @@ namespace Oxide.Plugins
             return true;
         }
 
-        private bool grantDrawError;
-        void DrawText(BasePlayer player, Vector3 drawPos, string text, float drawTime, bool grantDraw)
+        void DrawText(BasePlayer player, Vector3 drawPos, string text, float drawTime)
         {
-            if (grantDrawError || player == null || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || drawTime < 1f)
+            if (player == null || !player.IsConnected || drawPos == Vector3.zero || string.IsNullOrEmpty(text) || drawTime < 1f)
                 return;
 
-            bool isAdmin = player.IsAdmin;
-
-            try
+            if (!player.IsAdmin && !drawGrants.Contains(player.userID))
             {
-                if (grantDraw && !player.IsAdmin)
-                {
-                    var uid = player.userID;
-
-                    if (!drawGrants.Contains(uid))
-                    {
-                        drawGrants.Add(uid);
-                        timer.Once(drawTime, () => drawGrants.Remove(uid));
-                    }
-
-                    player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
-                    player.SendNetworkUpdateImmediate();
-                }
-
-                if (player.IsAdmin || drawGrants.Contains(player.userID))
-                    player.SendConsoleCommand("ddraw.text", drawTime, Color.yellow, drawPos, text);
-            }
-            catch (Exception ex)
-            {
-                grantDrawError = true;
-                Puts("DrawText Exception: {0}", ex);
-                Puts("Disabled drawing for players!");
+                ulong userid = player.userID;
+                drawGrants.Add(userid);
+                timer.Once(drawTime, () => drawGrants.Remove(userid));
             }
 
-            if (!isAdmin)
-            {
-                if (player.HasPlayerFlag(BasePlayer.PlayerFlags.IsAdmin))
-                {
-                    player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, false);
-                    player.SendNetworkUpdateImmediate();
-                }
-            }
+            player.SendConsoleCommand("ddraw.text", drawTime, Color.yellow, drawPos, text);
         }
 
         void AddItem(BasePlayer player, string[] args)
@@ -4757,8 +4734,6 @@ namespace Oxide.Plugins
 
         void cmdTreasureHunter(BasePlayer player, string command, string[] args)
         {
-            if (drawGrants.Contains(player.userID))
-                return;
             if (args.Contains("spm") && player.IsAdmin)
             {
                 foreach (var mi in monuments)
@@ -4917,6 +4892,7 @@ namespace Oxide.Plugins
                 return;
             }
 
+            bool canDraw = config.Settings.AllowDrawText && !drawGrants.Contains(player.userID);
             foreach (var chest in treasureChests.Values)
             {
                 double distance = Math.Round(player.transform.position.Distance(chest.containerPos), 2);
@@ -4928,9 +4904,9 @@ namespace Oxide.Plugins
                 }
                 else Message(player, "Already", posStr, distance, config.Settings.DistanceChatCommand);
 
-                if (config.Settings.AllowDrawText)
+                if (canDraw)
                 {
-                    DrawText(player, chest.containerPos, msg2("Treasure Chest", player.UserIDString, distance), chest.Options.Event.DrawTime, chest.Options.Event.GrantDraw);
+                    DrawText(player, chest.containerPos, msg2("Treasure Chest", player.UserIDString, distance), chest.Options.Event.DrawTime);
                 }
             }
         }
@@ -5211,6 +5187,7 @@ namespace Oxide.Plugins
             }
 
             _ownershipReady = true;
+            Skins.Clear();
         }
 
         public bool RequiresOwnership(ItemDefinition def, ulong skin)
@@ -5239,6 +5216,47 @@ namespace Oxide.Plugins
         public bool RemoveRequiresOwnership(ItemDefinition def, List<ulong> skins)
         {
             return skins.RemoveAll(skin => RequiresOwnership(def, skin)) != 0;
+        }
+
+        private bool RemoveRestrictedItems(PlayerInventory inventory)
+        {
+            return inventory != null && (RemoveRestrictedItems(inventory.containerBelt) | RemoveRestrictedItems(inventory.containerMain) | RemoveRestrictedItems(inventory.containerWear));
+        }
+
+        private bool RemoveRestrictedItems(ItemContainer container)
+        {
+            if (container?.itemList == null) return false;
+
+            for (int i = container.itemList.Count - 1; i >= 0; i--)
+            {
+                Item item = container.itemList[i];
+                if (RequiresOwnership(item.info, 0uL))
+                {
+                    item.GetHeldEntity().SafelyKill();
+                    item.RemoveFromContainer();
+                    item.Remove(0f);
+                    continue;
+                }
+
+                if (item.skin != 0uL && RequiresOwnership(item.info, item.skin))
+                {
+                    item.skin = 0uL;
+                    BaseEntity held = item.GetHeldEntity();
+                    if (held != null)
+                    {
+                        held.skinID = 0uL;
+                        held.SendNetworkUpdate();
+                    }
+                    item.MarkDirty();
+                }
+
+                if (item.contents != null)
+                {
+                    RemoveRestrictedItems(item.contents);
+                }
+            }
+
+            return container.itemList.Count > 0;
         }
 
         #endregion Facepunch TOS Compliance
@@ -5613,7 +5631,7 @@ namespace Oxide.Plugins
         public class ManagementSettingsLocations
         {
             [JsonProperty(PropertyName = "position")]
-            [JsonConverter(typeof(UnityVector3Converter))]
+            [JsonConverter(typeof(Vector3Converter))]
             public Vector3 position;
             public float radius;
             public ManagementSettingsLocations() { }
@@ -5623,12 +5641,18 @@ namespace Oxide.Plugins
             }
         }
 
-        private class UnityVector3Converter : JsonConverter
+        private class Vector3Converter : JsonConverter
         {
+            private static float Parse(object value)
+            {
+                if (value is not string text) return Convert.ToSingle(value, CultureInfo.InvariantCulture);
+                return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float result) ? result : float.Parse(text, NumberStyles.Float, CultureInfo.CurrentCulture);
+            }
+
             public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
             {
                 var vector = (Vector3)value;
-                writer.WriteValue($"{vector.x} {vector.y} {vector.z}");
+                writer.WriteValue(string.Format(CultureInfo.InvariantCulture, "{0:R} {1:R} {2:R}", vector.x, vector.y, vector.z));
             }
 
             public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
@@ -5636,10 +5660,10 @@ namespace Oxide.Plugins
                 if (reader.TokenType == JsonToken.String)
                 {
                     var values = reader.Value.ToString().Trim().Split(' ');
-                    return new Vector3(Convert.ToSingle(values[0]), Convert.ToSingle(values[1]), Convert.ToSingle(values[2]));
+                    return new Vector3(Parse(values[0]), Parse(values[1]), Parse(values[2]));
                 }
-                var o = Newtonsoft.Json.Linq.JObject.Load(reader);
-                return new Vector3(Convert.ToSingle(o["x"]), Convert.ToSingle(o["y"]), Convert.ToSingle(o["z"]));
+                var o = JObject.Load(reader);
+                return new Vector3(Parse(o["x"]), Parse(o["y"]), Parse(o["z"]));
             }
 
             public override bool CanConvert(Type objectType)
@@ -5749,9 +5773,6 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Auto Draw Minimum Distance")]
             public float AutoDrawDistance { get; set; } = 300f;
-
-            [JsonProperty(PropertyName = "Grant DDRAW temporarily to players")]
-            public bool GrantDraw { get; set; } = true;
 
             [JsonProperty(PropertyName = "Grant Draw Time")]
             public float DrawTime { get; set; } = 15f;
@@ -5904,7 +5925,6 @@ namespace Oxide.Plugins
 
         public class MonumentSettings
         {
-
             [JsonProperty(PropertyName = "NPC Blacklisted Monuments", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public Dictionary<string, bool> NPCBlacklist { get; set; } = new()
             {
@@ -6386,20 +6406,23 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Custom Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<ulong> Custom { get; set; } = new();
 
-            [JsonProperty(PropertyName = "Use Random Skin")]
-            public bool RandomSkins { get; set; } = true;
-
             [JsonProperty(PropertyName = "Preset Skin")]
             public ulong PresetSkin { get; set; } = 0;
-
-            [JsonProperty(PropertyName = "Include Workshop Skins")]
-            public bool RandomWorkshopSkins { get; set; } = true;
 
             [JsonProperty(PropertyName = "Randomize Npc Item Skins")]
             public bool Npcs { get; set; } = true;
 
             [JsonProperty(PropertyName = "Use Identical Skins For All Npcs")]
             public bool UniqueNpcs { get; set; } = true;
+
+            [JsonProperty(PropertyName = "Use Identical Skins For Stackable Items")]
+            public bool Stackable = true;
+
+            [JsonProperty(PropertyName = "Use Identical Skins For Non-Stackable Items")]
+            public bool NonStackable;
+
+            [JsonProperty(PropertyName = "Use Imported Workshop Skins File")]
+            public bool ImportedWorkshop = true;
         }
 
         public class LootItem
@@ -6477,12 +6500,8 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Loot", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<LootItem> Loot { get; set; } = DefaultLoot;
 
-            [JsonProperty(PropertyName = "Use Random Skins")]
-            public bool RandomSkins { get; set; } = false;
-
-            [JsonProperty(PropertyName = "Include Workshop Skins")]
-            public bool RandomWorkshopSkins { get; set; } = false;
-
+            [JsonProperty(PropertyName = "Use Imported Workshop Skins File")]
+            public bool ImportedWorkshop = true;
         }
 
         public class DayOfTheWeekSettings
@@ -6661,6 +6680,38 @@ namespace Oxide.Plugins
             }
         }
 
+        public class SkinSettingsImportedWorkshop
+        {
+            [JsonProperty(PropertyName = "Imported Workshop Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public Dictionary<string, List<ulong>> SkinList = new()
+            {
+                ["jacket.snow"] = new() { 785868744, 939797621 },
+                ["knife.bone"] = new() { 1228176194, 2038837066 }
+            };
+        }
+
+        public class SkinsPlugin
+        {
+            [JsonProperty(PropertyName = "Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<SkinItem> Skins = new()
+            {
+                new() { Shortname = "jacket.snow", Skins = new() { 785868744, 939797621 } },
+                new() { Shortname = "knife.bone", Skins = new() { 1228176194, 2038837066 } }
+            };
+        }
+
+        public class SkinItem
+        {
+            [JsonProperty(PropertyName = "Item Shortname")]
+            public string Shortname = "shortname";
+
+            [JsonProperty(PropertyName = "Permission")]
+            public string Permission = "";
+
+            [JsonProperty(PropertyName = "Skins", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<ulong> Skins = new() { 0 };
+        }
+
         private void ChkLevels(List<DifficultyLevel> levels)
         {
             HashSet<int> reserved = new(levels.Select(x => x.Level));
@@ -6772,8 +6823,6 @@ namespace Oxide.Plugins
             }
         }
 
-        private bool? previousRandomSkins = null;
-        private bool? previousRandomWorkshopSkins = null;
         private float? previousNpcRange = null;
         private bool? previousLeaveDome = null;
         private bool? previousTargetOther = null;
@@ -6804,8 +6853,6 @@ namespace Oxide.Plugins
             TryImport<bool>(value => previousTargetOther = value, "NPCs", "Allow Npcs To Target Other Npcs");
             TryImport<bool>(value => previousKillUnderwaterNpcs = value, "NPCs", "Kill Underwater Npcs");
             TryImport<bool>(value => previousNpcsEnabled = value, "NPCs", "Enabled");
-            TryImport<bool>(value => previousRandomSkins = value, "Treasure", "Use Random Skins");
-            TryImport<bool>(value => previousRandomWorkshopSkins = value, "Treasure", "Include Workshop Skins");
             TryImport<float>(value => previousNpcRange = value, "NPCs", "Block Damage From Players Beyond X Distance (0 = disabled)");
             TryImport<string>(value => config.Settings.PlayerLimitPermission = value, "Events", "Permission To Ignore With Players Limit");
             TryImport<bool>(value => config.Settings.BlockAlphaLoot = value, "NPCs", "Block AlphaLoot Plugin");
@@ -6833,6 +6880,82 @@ namespace Oxide.Plugins
 
             apply(value);
         }
+
+        public void LoadImportedSkins()
+        {
+            ImportedWorkshopSkins.Clear();
+            LoadImportedSkinboxPlugin();
+            LoadImportedSkinsPlugin();
+            Skins.Clear();
+        }
+
+        public void LoadImportedSkinboxPlugin()
+        {
+            SkinSettingsImportedWorkshop skinboxPlugin = null;
+            try
+            {
+                skinboxPlugin = Interface.Oxide.DataFileSystem.ReadObject<SkinSettingsImportedWorkshop>(Path.Combine(Name, "ImportedWorkshopSkins"));
+            }
+            catch (Exception ex)
+            {
+                Puts(ex.ToString());
+            }
+            skinboxPlugin ??= new();
+            skinboxPlugin.SkinList ??= new();
+            foreach (var pair in skinboxPlugin.SkinList)
+            {
+                if (pair.Value == null || string.IsNullOrWhiteSpace(pair.Key))
+                {
+                    continue;
+                }
+                if (!ImportedWorkshopSkins.TryGetValue(pair.Key, out var value))
+                {
+                    ImportedWorkshopSkins[pair.Key] = value = new();
+                }
+                foreach (ulong skin in pair.Value)
+                {
+                    if (!value.Contains(skin))
+                    {
+                        value.Add(skin);
+                    }
+                }
+            }
+        }
+
+        public void LoadImportedSkinsPlugin()
+        {
+            SkinsPlugin skinsPlugin = null;
+            try
+            {
+                skinsPlugin = Interface.Oxide.DataFileSystem.ReadObject<SkinsPlugin>(Path.Combine(Name, "SkinsPlugin"));
+            }
+            catch (Exception ex)
+            {
+                Puts(ex.ToString());
+            }
+            skinsPlugin ??= new();
+            skinsPlugin.Skins ??= new();
+            foreach (SkinItem skinItem in skinsPlugin.Skins)
+            {
+                if (skinItem?.Skins == null || string.IsNullOrWhiteSpace(skinItem.Shortname))
+                {
+                    continue;
+                }
+                foreach (ulong skin in skinItem.Skins)
+                {
+                    if (!ImportedWorkshopSkins.TryGetValue(skinItem.Shortname, out var value))
+                    {
+                        ImportedWorkshopSkins[skinItem.Shortname] = value = new();
+                    }
+                    if (!value.Contains(skin))
+                    {
+                        value.Add(skin);
+                    }
+                }
+            }
+        }
+
+        public readonly Dictionary<string, List<ulong>> ImportedWorkshopSkins = new();
 
         private string BackupConfigFilePath() => Utility.CleanPath(Manager.ConfigPath + "/" + "DangerousTreasures.json.bak");
 
@@ -6917,8 +7040,6 @@ namespace Oxide.Plugins
                     options.Rewards = previousRewardSettings.Clone();
                     imports.Add("Successfully imported Reward settings.");
                 }
-                if (previousRandomSkins.HasValue) options.Treasure.RandomSkins = previousRandomSkins.Value;
-                if (previousRandomWorkshopSkins.HasValue) options.Treasure.RandomWorkshopSkins = previousRandomWorkshopSkins.Value;
                 if (previousNpcRange.HasValue) options.NPC.Range = previousNpcRange.Value;
                 if (previousNpcsEnabled.HasValue) options.NPC.Enabled = previousNpcsEnabled.Value;
                 if (previousLeaveDome.HasValue) options.NPC.CanLeave = previousLeaveDome.Value;
@@ -6975,7 +7096,7 @@ namespace Oxide.Plugins
             previousMissileSettings = null;
             previousFireSettings = null;
             previousRewardSettings = null;
-            previousRandomSkins = previousRandomWorkshopSkins = previousNpcsEnabled = previousLeaveDome = previousTargetOther = previousKillUnderwaterNpcs = null;
+            previousNpcsEnabled = previousLeaveDome = previousTargetOther = previousKillUnderwaterNpcs = null;
             previousNpcRange = null;
 
             if (imports.Count > 0) Puts("\n" + string.Join("\n", imports));
@@ -7083,6 +7204,7 @@ namespace Oxide.Plugins.DangerousTreasuresExtensionMethods
         public static List<T> OfType<T>(this IEnumerable<BaseNetworkable> a) where T : BaseEntity { var b = new List<T>(); using (var c = a.GetEnumerator()) { while (c.MoveNext()) { if (c.Current is T) { b.Add(c.Current as T); } } } return b; }
         public static int Count<T>(this IEnumerable<T> a, Func<T, bool> b = null) { int c = 0; foreach (T d in a) { if (b == null || b(d)) { c++; } } return c; }
         public static int Sum<T>(this IEnumerable<T> a, Func<T, int> b) { int c = 0; foreach (T d in a) { c = checked(c + b(d)); } return c; }
+        public static T GetRandom<T>(this HashSet<T> h) { if (h == null || h.Count == 0) { return default; } return h.ElementAt(UnityEngine.Random.Range(0, h.Count)); }
         public static string ObjectName(this Collider collider) { try { return collider.name ?? string.Empty; } catch { return string.Empty; } }
         public static bool IsReallyConnected(this BasePlayer a) { return a.IsReallyValid() && a.net.connection != null; }
         public static bool IsKilled(this BaseNetworkable a) => a == null || a.IsDestroyed || !a.IsFullySpawned();
